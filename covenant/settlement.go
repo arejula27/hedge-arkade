@@ -1,6 +1,7 @@
 package covenant
 
 import (
+	"crypto/sha256"
 	"fmt"
 
 	"github.com/arkade-os/emulator/pkg/arkade"
@@ -38,6 +39,12 @@ type Terms struct {
 	// contract needs no clock.
 	LowLiquidationPrice  int64
 	HighLiquidationPrice int64
+
+	// ShortLockScript and LongLockScript are where each side is paid, as full
+	// scriptPubKeys. Checking payout amounts without checking these would leave
+	// the amounts correct and the recipients up to whoever spends.
+	ShortLockScript []byte
+	LongLockScript  []byte
 }
 
 func (t Terms) validate() error {
@@ -53,6 +60,10 @@ func (t Terms) validate() error {
 			t.HighLiquidationPrice, t.LowLiquidationPrice)
 	case t.SatsForNominalUnitsAtHighLiquidation < 0:
 		return fmt.Errorf("leverage term is negative: %d", t.SatsForNominalUnitsAtHighLiquidation)
+	case len(t.ShortLockScript) == 0:
+		return fmt.Errorf("short lock script is empty")
+	case len(t.LongLockScript) == 0:
+		return fmt.Errorf("long lock script is empty")
 	}
 	return nil
 }
@@ -65,12 +76,12 @@ func (t Terms) validate() error {
 //	shortSats    = max(DUST, nominalUnits/clampedPrice - satsAtHighLiquidation)
 //	longSats     = max(DUST, payoutSats - shortSats)
 //
-// Both output values are then checked exactly, not as a lower bound.
+// Both outputs are then checked exactly — value and recipient — with the
+// transaction pinned to one input and two outputs.
 //
-// Not yet built: oracle signature verification, the sequence-adjacency check
-// that pins which message may be used, and the output lock scripts. Values
-// without lock scripts means the amounts are right and the recipients are
-// whoever the spender likes — this script is not safe to deploy as it stands.
+// Not yet built: oracle signature verification and the sequence-adjacency check
+// that pins which oracle message may be used. Until those land the price on the
+// witness is unauthenticated, so this is not deployable.
 func (t Terms) SettlementScript() ([]byte, error) {
 	if err := t.validate(); err != nil {
 		return nil, err
@@ -112,6 +123,15 @@ func (t Terms) SettlementScript() ([]byte, error) {
 	b.AddOp(arkade.OP_2)
 	b.AddOp(arkade.OP_NUMEQUALVERIFY)
 
+	// Recipients, before any arithmetic: getting the amounts right is pointless
+	// if they can be sent anywhere.
+	if err := addLockScriptCheck(b, arkade.OP_0, t.ShortLockScript); err != nil {
+		return nil, fmt.Errorf("short lock script: %w", err)
+	}
+	if err := addLockScriptCheck(b, arkade.OP_1, t.LongLockScript); err != nil {
+		return nil, fmt.Errorf("long lock script: %w", err)
+	}
+
 	// clampedPrice = max(min(price, high), low)
 	b.AddData(high)
 	b.AddOp(arkade.OP_MIN)
@@ -120,10 +140,9 @@ func (t Terms) SettlementScript() ([]byte, error) {
 
 	// shortSats = max(DUST, nominal/clampedPrice - leverage)
 	//
-	// The division runs on the VM. Folding nominal/price into a build-time
-	// constant is impossible anyway, but note the multiplication that produces
-	// `nominal` must not be done in Go either: it overflows int64 for a large
-	// position, and BigNum is the only arithmetic here without a ceiling.
+	// The division runs on the VM, and so must the multiplication that produces
+	// `nominal`: it overflows int64 for a large position, and BigNum is the only
+	// arithmetic here without a ceiling.
 	b.AddData(nominal)
 	b.AddOp(arkade.OP_SWAP)
 	b.AddOp(arkade.OP_DIV)
@@ -151,6 +170,47 @@ func (t Terms) SettlementScript() ([]byte, error) {
 	b.AddOp(arkade.OP_NUMEQUAL)
 
 	return b.Script()
+}
+
+// addLockScriptCheck emits a comparison against the scriptPubKey of one output.
+//
+// OP_INSPECTOUTPUTSCRIPTPUBKEY does not push the raw script. For a witness
+// program it pushes the program and then the witness version; for anything else
+// it pushes sha256(script) and then -1. Both shapes are handled so a contract
+// can pay out to any valid output, as AnyHedge does.
+func addLockScriptCheck(b *txscript.ScriptBuilder, indexOp byte, lockScript []byte) error {
+	digest, version, err := lockScriptCommitment(lockScript)
+	if err != nil {
+		return err
+	}
+	encodedVersion, err := bigNumBytes(version)
+	if err != nil {
+		return err
+	}
+
+	b.AddOp(indexOp)
+	b.AddOp(arkade.OP_INSPECTOUTPUTSCRIPTPUBKEY) // digest version
+	b.AddData(encodedVersion)
+	b.AddOp(arkade.OP_NUMEQUALVERIFY) // digest
+	b.AddData(digest)
+	b.AddOp(arkade.OP_EQUALVERIFY)
+
+	return nil
+}
+
+// lockScriptCommitment returns what the VM will push for a given scriptPubKey:
+// the witness program and its version, or sha256(script) and -1.
+func lockScriptCommitment(lockScript []byte) ([]byte, int64, error) {
+	if !txscript.IsWitnessProgram(lockScript) {
+		hash := sha256.Sum256(lockScript)
+		return hash[:], -1, nil
+	}
+
+	version, program, err := txscript.ExtractWitnessProgramInfo(lockScript)
+	if err != nil {
+		return nil, 0, fmt.Errorf("extracting witness program: %w", err)
+	}
+	return program, int64(version), nil
 }
 
 // bigNumBytes encodes an integer the way the VM's BigNum stack expects it.

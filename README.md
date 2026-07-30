@@ -115,9 +115,6 @@ can be diffed. AnyHedge calls the hedge side **short**; we use the same word her
 | `startTimestamp` | Earliest timestamp a liquidation may be redeemed at |
 | `maturityTimestamp` | Required timestamp for maturity redemption |
 
-Arkade adds to this list: `servicePk` for the 2-of-3 exit destination, the operator pubkey on the
-collaborative leaves, and the CSV delay on the exit leaf.
-
 **Both liquidation boundaries come back.** An earlier draft dropped `highLiquidationPrice` on the
 grounds that a 1x hedge only binds below. That was wrong, and for a reason that matters: the clamp
 is what makes every out-of-bounds message pay identically, which is half of why AnyHedge needs no
@@ -127,20 +124,14 @@ clock. Without the upper boundary there is no upper clamp and the long's win is 
 which is the product we described; keeping the parameter costs nothing and leaves leveraged shorts
 available later.
 
----|---|---|
-| `hedgePk` | pubkey | Hedge side key |
-| `longPk` | pubkey | Long side key |
-| `servicePk` | pubkey | Service key — used only in the 2-of-3 exit destination |
-| `oraclePk` | pubkey | Price oracle public key |
-| `ticker` | bytes32 | Feed identifier, e.g. `sha256("BTC/USD")` |
-| `hedgeValueCents` | int | USD value the hedge locks in, in cents. Constant |
-| `totalCollateral` | int | Sum of both contributions, in sats. Constant |
-| `maturityTime` | int | Unix seconds. Normal expiry |
-| `exit` | int | CSV delay on the exit leaf (seconds, multiple of 512, ≥ `getInfo().exitDelay`) |
+Arkade adds to that list:
 
-`hedgeLeverage` is 1x by definition. The long's leverage is implicit in the ratio
-`totalCollateral / hedgeValueCents` — it is not a contract parameter, it is a consequence of how
-much each side puts in at funding.
+| Parameter | Type | Description |
+|---|---|---|
+| `servicePk` | pubkey | Third key of the 2-of-3 the emergency exit sweeps into |
+| `signerPk` | pubkey | The operator, required on both collaborative leaves |
+| `exit` | int | CSV delay on the exit leaf (seconds, multiple of 512, ≥ `getInfo().exitDelay`) |
+| `ticker` | bytes32 | Feed identifier, e.g. `sha256("BTC/USD")` |
 
 ---
 
@@ -423,18 +414,30 @@ would predict.
 | `settlement.go` | `Terms` and `SettlementScript()` — AnyHedge's payout path, built with `txscript.NewScriptBuilder` and the opcodes `pkg/arkade` exports |
 | `vm.go` | The harness: an `ArkPrevOutFetcher`, a synthetic spending transaction, and `Run` to execute a script on `arkade.NewEngine` |
 
-All arithmetic runs on the VM. Expected payouts are written out in the test table, never computed.
+`pkg/arkade` is the same interpreter the emulator service runs before co-signing
+(`internal/application/tx.go:67`), pulled in as a published module — no local `replace`, so the
+repo builds anywhere. `Run` also applies `WithExactComputeLimits(DefaultComputeLimits())`, which is
+the table the service uses when no `COMPUTE_LIMITS` overrides are set, so a change to those
+defaults surfaces as a test failure.
 
-Pinned by 20 passing cases: the clamp on both boundaries and far past them, the dust floor, the
-leverage term, truncation direction, a nominal of 9e18, exact-value checks in both directions
-(under *and* over), swapped payouts, and the input/output count.
+All arithmetic runs on the VM. Expected payouts appear exactly once, in the accepted-settlements
+table; every other test derives from it.
 
-**Not safe to deploy yet.** Missing, in the order it matters:
+52 cases, covering:
 
-1. **Output lock scripts.** The script checks output *values* and not who they pay. Right now the
-   amounts are correct and the recipients are whoever the spender chooses
-2. **Oracle signature verification** — `CHECKSIGFROMSTACK` over the reassembled message
-3. **Sequence adjacency** — the two-message check that pins which oracle message may be used
+- The clamp at both boundaries, one cent inside each, and far past them
+- The dust floor, including the case where the two payouts sum to more than `payoutSats`
+- Truncation direction, the leverage term, and a nominal of 9e18
+- **Exactness**: for every accepted settlement, six mutations — each side ±1, and a sat moved in
+  either direction — must all fail. Overpaying is a different settlement, not a generous one
+- **Recipients**: payouts redirected, swapped, and sent to a non-taproot output
+- **Shape**: a third output, a missing output, an extra input
+- Every parameter changing the script, and a golden hex fixture the TypeScript verifier will pin to
+
+**Not deployable yet.** The price on the witness is unauthenticated, so what remains is:
+
+1. **Oracle signature verification** — `CHECKSIGFROMSTACK` over the reassembled message
+2. **Sequence adjacency** — the two-message check that pins which oracle message may be used
 
 ### Verification
 

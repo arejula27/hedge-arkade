@@ -2,10 +2,8 @@ module github.com/arejula27/hedge/covenant
 
 go 1.26.5
 
-replace github.com/arkade-os/emulator/pkg/arkade => ../../emulator/pkg/arkade
-
 require (
-	github.com/arkade-os/emulator/pkg/arkade v0.0.0-00010101000000-000000000000
+	github.com/arkade-os/emulator/pkg/arkade v0.0.0-20260728084232-b2c7d853d267
 	github.com/btcsuite/btcd v0.24.3-0.20240921052913-67b8efd3ba53
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.2.0
 )

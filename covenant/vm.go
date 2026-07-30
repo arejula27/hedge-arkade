@@ -13,53 +13,45 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
-// Outputs is the settlement a spender proposes: what each side would receive.
-// The covenant's job is to accept it or reject it.
-type Outputs struct {
-	Hedge int64
-	Long  int64
+// Payout is one settlement output: an amount and who it pays.
+type Payout struct {
+	Sats       int64
+	LockScript []byte
 }
 
-// Run executes an Arkade Script against the VM with the given initial stack and
-// proposed outputs, and reports whether it succeeded.
-//
-// The stack is the script's witness, bottom element first. Outputs become the
-// spending transaction's outputs in order, so output 0 is the hedge side.
-func Run(script []byte, stack [][]byte, out Outputs) error {
-	tx := spendingTx(out)
+// Spend is the settlement a spender proposes. The covenant's job is to accept
+// it or reject it.
+type Spend struct {
+	Outputs []Payout
 
+	// ExtraInputs adds inputs beyond the contract VTXO, for checking that the
+	// covenant pins the transaction's shape.
+	ExtraInputs int
+}
+
+// Run executes an Arkade Script against the VM with the given witness stack and
+// proposed spend, and reports whether it succeeded.
+//
+// The stack is bottom element first.
+func Run(script []byte, stack [][]byte, spend Spend) error {
 	vm, err := arkade.NewEngine(
-		script, tx, 0, nil, nil, inputAmount, newPrevOutFetcher(),
+		script, spendingTx(spend), 0, nil, nil, inputAmount, newPrevOutFetcher(),
 	)
 	if err != nil {
 		return err
 	}
 
+	// The emulator service replaces the limit table wholesale before executing
+	// (internal/application/tx.go:67). Its config starts from these defaults and
+	// applies COMPUTE_LIMITS overrides, so with no overrides this is the
+	// deployed table. Declaring it here means a change to the defaults shows up
+	// as a test failure rather than as a surprise in production.
+	arkade.WithExactComputeLimits(arkade.DefaultComputeLimits())(vm)
+
 	if len(stack) > 0 {
 		vm.SetStack(stack)
 	}
 
-	return vm.Execute()
-}
-
-// RunWithOutputCount executes a script against a transaction with n outputs
-// instead of the usual two, for checking that the covenant pins the shape.
-func RunWithOutputCount(script []byte, stack [][]byte, n int) error {
-	tx := &wire.MsgTx{
-		Version: 2,
-		TxIn:    []*wire.TxIn{{PreviousOutPoint: fundingOutpoint}},
-	}
-	for range n {
-		tx.TxOut = append(tx.TxOut, &wire.TxOut{Value: 1, PkScript: placeholderScript})
-	}
-
-	vm, err := arkade.NewEngine(script, tx, 0, nil, nil, inputAmount, newPrevOutFetcher())
-	if err != nil {
-		return err
-	}
-	if len(stack) > 0 {
-		vm.SetStack(stack)
-	}
 	return vm.Execute()
 }
 
@@ -70,35 +62,43 @@ const inputAmount = 10_000_000_000
 
 var fundingOutpoint = wire.OutPoint{Hash: chainhash.Hash{}, Index: 0}
 
-// spendingTx is the transaction the covenant introspects: one input spending the
-// contract VTXO, one output per side.
-func spendingTx(out Outputs) *wire.MsgTx {
+func spendingTx(spend Spend) *wire.MsgTx {
 	tx := &wire.MsgTx{
 		Version: 2,
 		TxIn:    []*wire.TxIn{{PreviousOutPoint: fundingOutpoint}},
 	}
 
-	for _, v := range []int64{out.Hedge, out.Long} {
-		tx.TxOut = append(tx.TxOut, &wire.TxOut{Value: v, PkScript: placeholderScript})
+	for i := range spend.ExtraInputs {
+		tx.TxIn = append(tx.TxIn, &wire.TxIn{
+			PreviousOutPoint: wire.OutPoint{Hash: chainhash.Hash{}, Index: uint32(i + 1)},
+		})
+	}
+
+	for _, out := range spend.Outputs {
+		tx.TxOut = append(tx.TxOut, &wire.TxOut{Value: out.Sats, PkScript: out.LockScript})
 	}
 
 	return tx
 }
 
-// placeholderScript stands in for a real destination. The settlement covenant
-// constrains output *values*; which script each payout lands in is checked
-// separately, so the tests here leave it constant.
-var placeholderScript = append([]byte{txscript.OP_1, txscript.OP_DATA_32}, make([]byte, 32)...)
+// P2TR builds a taproot scriptPubKey from a 32-byte x-only key. Payouts land in
+// VTXOs, so this is the output type the contract actually pays to.
+func P2TR(xOnlyKey []byte) []byte {
+	script := make([]byte, 0, 34)
+	script = append(script, txscript.OP_1, txscript.OP_DATA_32)
+	return append(script, xOnlyKey...)
+}
 
-// prevOutFetcher satisfies arkade.ArkPrevOutFetcher for a single synthetic
-// funding outpoint.
+// prevOutFetcher satisfies arkade.ArkPrevOutFetcher for the synthetic funding
+// outpoint. Extra inputs resolve to nil, which is what a spender bringing along
+// an unrelated input would look like.
 type prevOutFetcher struct {
 	txscript.PrevOutputFetcher
 	arkTx *wire.MsgTx
 }
 
 func newPrevOutFetcher() *prevOutFetcher {
-	prevOut := &wire.TxOut{Value: inputAmount, PkScript: placeholderScript}
+	prevOut := &wire.TxOut{Value: inputAmount, PkScript: P2TR(make([]byte, 32))}
 
 	return &prevOutFetcher{
 		PrevOutputFetcher: txscript.NewMultiPrevOutFetcher(
