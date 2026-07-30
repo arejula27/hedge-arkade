@@ -24,12 +24,14 @@ Full protocol spec in `README.md`. Read it first.
 - **Environment**: `nix develop` (flake at the repo root). Pins Go 1.26.5 — the exact version
   `../emulator/pkg/arkade` requires — and Node 22. Nothing is installed globally on this machine,
   so every `go`/`node` invocation goes through `nix develop --command`
-- **Language**: TypeScript (Node.js 22)
-- **Contract**: SDK `Program` object. `arkadec`/`.ark` is spec-only, off the build path
-- **Client SDK**: `@arkade-os/sdk` (0.4.51+)
+- **Service** (API, web, users, matching, oracle, arkd client): **Go**
+- **Contract builder**: Go, in `covenant/`. Scripts are assembled with
+  `txscript.NewScriptBuilder` and the opcodes `pkg/arkade` exports. `arkadec`/`.ark` is spec-only,
+  off the build path
+- **Client verifier**: TypeScript in the browser. Recognises a contract against known templates or
+  refuses to fund. Pinned to the Go builder by a golden hex fixture in CI
 - **Co-signer**: Arkade `emulator` — executes Arkade Script, required for every covenant path
-- **Unit tests (math)**: `vitest`
-- **Unit tests (covenant)**: Go, against `github.com/arkade-os/emulator/pkg/arkade`
+- **Covenant tests**: Go, against `github.com/arkade-os/emulator/pkg/arkade`
 - **Regtest**: nigiri + arkd + arkd-wallet + emulator via Docker Compose
 
 ## Sibling repos (all under `../`)
@@ -50,9 +52,11 @@ it can be imported standalone. `NewEngine`, `Engine.Execute()`, `SetStack`, `Get
 `ArkPrevOutFetcher` interface (3 methods), and the **real covenant VM runs in `go test`** — no
 Docker, no arkd, no nigiri.
 
-Workflow: the `Program` is defined in TypeScript (source of truth) → the compiled `arkadeScript`
-is dumped to hex as a fixture → the Go test loads the fixture and executes it against the VM with
-different prices, stacks and transactions.
+This is wired up in `covenant/vm.go` and green. `Run(script, stack, outputs)` builds the spending
+transaction, feeds the witness and executes.
+
+Expected payouts live in the test table as constants. Never compute them in Go — that reintroduces
+the parallel implementation the covenant exists to be the only copy of.
 
 This matters more here than in `../bond-protocol`. That project had to write a symbolic
 `stackSim.ts`, whose own header admits *"it is not an interpreter: comparisons and arithmetic
@@ -69,9 +73,12 @@ all need real execution.
 - **Oracle message format is fixed**: `sha256(ticker || price || timestamp)`, price and timestamp
   as 8-byte LE unsigned, price in USD cents per BTC. Freshness `0 <= age <= 600s`. Reject
   future-dated prices explicitly
-- **The settlement math runs in the covenant, never on our server.** `covenant/` is a Go test
-  double used to check the VM, not a runtime component. Any design that computes the split
-  service-side is wrong
+- **The settlement math runs in the covenant, never on our server.** `covenant/` emits that script
+  and runs it; it holds no formula of its own. Any design that computes the split service-side is
+  wrong
+- **All arithmetic runs on the VM**, including `hedgeValueCents * 1e8`. Folding it into a
+  build-time Go constant overflows int64 for a large position — BigNum is the only arithmetic here
+  without a ceiling
 - **Exit leaves drop the covenant.** One CSV 2-of-2 leaf (hedge + long); the exit transaction is
   **pre-signed at funding** and sweeps to a 2-of-3 `{hedge, long, service}`. Pre-signing is what
   makes it unilateral — either party broadcasts it alone once the CSV matures, and neither can
@@ -81,11 +88,12 @@ all need real execution.
   `getInfo().exitDelay`. arkd classifies each closure and applies the matching rule
   (`vtxo_script.go:93`)
 - **Maturity is gated in the covenant, not by a tapscript CLTV.** A leaf-level CLTV is
-  unconditional and would block early liquidation. Use `tx.offchainTime >= maturityTime` inside the
-  covenant
-- **Two timebases, don't mix them.** `tx.time` is Bitcoin `nLockTime` (consensus, via CLTV);
-  `tx.offchainTime` is the TEE introspector's wallclock in Unix seconds. We use the latter. It is
-  not monotonic, so every subtraction from it needs a `>= 0` guard
+  unconditional and would block early liquidation
+- **`tx.offchainTime` does not exist.** It is in `stability_vault.ark` and the compiler's guidance
+  but neither implements it: `introspection.rs:5` maps only `version`/`locktime`/`numInputs`/
+  `numOutputs`/`weight`/`id`, and the VM's only clock is `OP_INSPECTLOCKTIME` (`nLockTime`, chosen
+  by the spender). Do not write a covenant that depends on a wallclock until this is answered —
+  README §Blocked
 - **The 2-of-3 lives in the sweep destination, not in a leaf.** Inside a VTXO every closure is
   N-of-N; outside it, the destination is any Bitcoin output script and a real threshold is fine
 - **No m-of-n in a `tapscript` leaf.** arkd's `MultisigClosure` is always N-of-N; its decoder
@@ -113,8 +121,8 @@ all need real execution.
 A contract with arithmetic compiled by `arkadec` **will not execute on the current VM**, and this
 contract is arithmetic almost end to end.
 
-Consequence: contracts are hand-written as SDK `Program` objects. `.ark` files are kept as
-readable spec.
+Consequence: scripts are assembled by hand in Go with `txscript.NewScriptBuilder`. `.ark` files
+are kept as readable spec.
 
 ## SDK gotchas (verified against 0.4.51)
 
@@ -141,12 +149,20 @@ The covenant is enforced by the emulator co-signing, **not** by Bitcoin consensu
 
 ## Current status
 
-`covenant/` holds the reference settlement math in Go (`Settle`, `LiquidationPrice`, oracle digest
-and freshness) with unit tests — dependency free, and the thing the VM will be checked against.
+**The settlement covenant executes on the real VM and its tests are green** (18 cases). `covenant/`
+builds the script for Leaf 1's payout logic and runs it through `arkade.NewEngine`. What is pinned:
+the split at several prices, the liquidation clamp on the boundary, truncation direction, the int64
+overflow, six underpayment attempts, and script determinism.
 
-Everything else is spec. Viability is confirmed at the opcode level (every operation the contract
-needs exists and resolves from the TypeScript SDK), but **no covenant has been executed** — not
-against the VM, not against a live stack. The `Program` object does not exist yet.
+What is **not** built yet, in the order it blocks things:
+
+1. **The clock.** Freshness and maturity both need a trustworthy time source and there isn't one —
+   see README §Blocked. This gates the rest of Leaf 1
+2. Oracle signature verification (`CHECKSIGFROMSTACK`, message reassembly with `CAT`/`NUM2BIN`)
+3. Output script constraints — the covenant currently checks output *values*, not that they pay
+   the right keys
+4. The tapscript segments, the taproot tree, and the pre-signed exit package
+5. The service (Go): API, users, matching, oracle signing, storage
 
 Note for integration work: in `../bond-protocol` the regtest stack could never be started because
 Docker Desktop's WSL integration is disabled on this machine. Resolve that before planning

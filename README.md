@@ -25,13 +25,14 @@ Original reference: `anyhedge.cash`
 | Emergency exit | One CSV 2-of-2 leaf, pre-signed at funding, sweeping to a 2-of-3 | 2026-07-30 |
 | Early mutual close | **At the oracle price**, not a free split. No leaf settles at anyone's discretion | 2026-07-30 |
 | Structure | 3 leaves: 2 covenant (offchain) + 1 exit (L1). Only the exit touches Bitcoin | 2026-07-30 |
-| Maturity gate | `tx.offchainTime` inside the covenant, **not** a tapscript CLTV | 2026-07-30 |
-| Language | TypeScript (contract + service), Go for the settlement math and VM tests | 2026-07-27 |
+| Maturity gate | **Blocked** — no trustworthy clock exists in the VM. See §Blocked | 2026-07-30 |
+| Language | **Go** for the service and the contract builder; TypeScript only for the client-side verifier | 2026-07-30 |
+| Contract distribution | The service builds the tree and sends it whole; the client recognises it or refuses | 2026-07-30 |
 | Funding rate | **Dropped** — it is what makes stability perpetual | 2026-07-27 |
 
-**The settlement math lives in the covenant**, executed by the emulator VM. The Go package in
-`covenant/` is a test double used to check the VM, not a component of the running system. See
-§`covenant/`.
+**The settlement math lives in the covenant**, executed by the emulator VM. No part of it is
+reimplemented in the service. `covenant/` builds that script and runs it against the real VM; it
+contains no formula of its own. See §`covenant/`.
 
 **Viability: confirmed opcode by opcode.** Everything the spec needs exists in the emulator VM and
 resolves from the TypeScript SDK. See §Verified viability.
@@ -148,7 +149,7 @@ sig = sign(oraclePk, msg)
 Freshness checks inside the covenant:
 
 ```
-oracleAge = tx.offchainTime - oracleTime
+oracleAge = <now> - oracleTime
 require(oracleAge >= 0,   "future-dated oracle")   // reject future-dated prices
 require(oracleAge <= 600, "stale oracle")          // 10-minute window
 ```
@@ -156,21 +157,28 @@ require(oracleAge <= 600, "stale oracle")          // 10-minute window
 Verified with `checkSigFromStack(oracleSig, oraclePk, oracleMsg)` — `OP_CHECKSIGFROMSTACK`
 (`0xcc`), 64-byte compact signature, 32-byte x-only Schnorr pubkey.
 
-### Which clock `tx.offchainTime` is
+### Blocked: there is no trustworthy clock
 
-Arkade Script exposes two timebases with different trust properties:
+`tx.offchainTime` **does not exist**. It appears in `stability_vault.ark` and in the compiler's own
+guidance, described as the TEE introspector's wallclock, but neither side implements it:
 
-| | What it is | Enforced by |
-|---|---|---|
-| `tx.time` | Bitcoin `nLockTime` | Consensus, via a CLTV in the tapscript |
-| `tx.offchainTime` | The TEE introspector's wallclock, in Unix seconds | The emulator's TEE |
+- The compiler @ `3988a9d` maps only `version`, `locktime`, `numInputs`, `numOutputs`, `weight` and
+  `id` (`src/compiler/introspection.rs:5`). Anything else falls through to a placeholder branch
+  that emits the literal string `<tx.offchainTime>`, which is not an opcode
+- The VM's only clock is `OP_INSPECTLOCKTIME`, which reads the transaction's `nLockTime`
 
-We use `tx.offchainTime`. It is the one that supports a 10-minute window, and the one that can gate
-maturity without a tapscript CLTV (see Leaf 1). It rests on the same TEE assumption as the rest of
-the covenant — no new trust anchor, no consensus behind it either.
+That leaves `nLockTime`, **chosen by whoever spends**. Two consequences:
 
-The TEE wallclock is **not guaranteed monotonic**, so every subtraction from it needs a
-non-negative guard. Without `require(oracleAge >= 0)` a future-dated price is replayable.
+**The freshness window does not hold.** `oracleAge = tx.locktime - oracleTime` is forgeable: take
+an old favourable price, set `nLockTime = oracleTime + 300`, and it passes. Consensus places no
+lower bound on `nLockTime`, so a past value is always legal.
+
+**The maturity gate is one-sided.** On L1 a transaction cannot confirm before its `nLockTime`, so
+settling early is blocked there. Offchain that binding is whatever the operator enforces, which is
+not in the covenant.
+
+Both freshness and maturity depend on this, so it blocks the contract. Open question for the Arkade
+team: what is today's trustworthy time source for an oracle freshness window.
 
 ---
 
@@ -201,8 +209,8 @@ Internal key = **NUMS** (Nothing Up My Sleeve) — no key-path spend, forcing on
 - `checkSigFromStack` validates the oracle-signed price message
 - `MUL`/`DIV` compute `hedgePayoutSats`
 - `INSPECTOUTPUTVALUE` enforces conservation
-- Trigger: `tx.offchainTime >= maturityTime` **or** `hedgePayoutSats >= totalCollateral`
-  (early liquidation — the long ran out of collateral)
+- Trigger: `<now> >= maturityTime` **or** `hedgePayoutSats >= totalCollateral` (early
+  liquidation — the long ran out of collateral). The `<now>` half is blocked; see §Blocked
 
 **What settling actually does.** It spends the contract VTXO and creates two new VTXOs, one owned
 by the hedge and one owned by the long, sized by the formula. The sats do move to each side; they
@@ -214,8 +222,8 @@ force that step and does not need it.
 
 **Why the maturity gate is not a CLTV.** A tapscript CLTV applies to the whole leaf
 unconditionally, so a leaf gated on `CLTV(maturityTime)` could not also fire early on liquidation.
-The `matured || liquidated` disjunction lives in the covenant instead, reading `tx.offchainTime`,
-and the tapscript segment carries no timelock.
+The `matured || liquidated` disjunction lives in the covenant instead, and the tapscript segment
+carries no timelock. Which clock the covenant reads is unresolved.
 
 Both triggers share one leaf because they differ only in a condition, not in the key set.
 
@@ -313,7 +321,7 @@ Checked against `arkade-os/emulator` (`pkg/arkade`), `@arkade-os/sdk` 0.4.51 and
 | Rebuilding the message | `CAT`, `SUBSTR`, `NUM2BIN`, `BIN2NUM` | Mixed |
 | Value conservation | `INSPECTOUTPUTVALUE` (0xcf) | `ARKADE_OP` |
 | Thresholds | `GREATERTHANOREQUAL`, `LESSTHAN` | Bitcoin base |
-| Maturity | `tx.offchainTime` (TEE wallclock) | Emulator introspection, no tapscript timelock |
+| Maturity | **unresolved** — see §Blocked | — |
 
 All resolve through `ARKADE_OPS = { ...OP, ...ARKADE_OP }` in the SDK.
 
@@ -326,10 +334,10 @@ truncation, handled with a fixed 1e8 scale exactly as stability does.
 ## Stack
 
 - **Environment**: `nix develop` (flake at the repo root) — Go 1.26.5 and Node 22, reproducible
-- **Contract**: SDK `Program` object (`@arkade-os/sdk`)
-- **Web service**: TypeScript / Node.js 22
-- **Settlement math + covenant tests**: Go, in `covenant/`, against
-  `github.com/arkade-os/emulator/pkg/arkade`
+- **Service** (API, web, users, matching, oracle, arkd client): **Go**
+- **Contract builder**: Go, in `covenant/`
+- **Client verifier**: TypeScript, running in the browser — see §Verification
+- **Covenant tests**: Go, against `github.com/arkade-os/emulator/pkg/arkade`
 - **Integration**: nigiri + arkd + arkd-wallet + emulator via Docker Compose
 
 `arkadec` (the `.ark` file) is kept as **readable spec** and is not on the build path — see
@@ -340,24 +348,48 @@ nix develop                      # Go 1.26.5 + Node 22
 cd covenant && go test ./...
 ```
 
-### `covenant/` — reference implementation, not the product
+### `covenant/` — the contract, and the VM it runs on
 
-> **The settlement math runs in the covenant, on the emulator VM — never on our server.** A
-> service-side split would mean the parties trust us to divide their collateral, which is the
-> property this contract exists to remove.
-
-`covenant/` is a dependency-free Go module reproducing that arithmetic **opcode by opcode**,
-truncation included. It is what the VM gets checked against: if this package and the VM disagree,
-one of them has a bug, and it is not a rounding difference.
+The settlement formula exists in exactly one place: the Arkade Script this package emits. Nothing
+recomputes it in Go, and the tests assert on what the VM does rather than on what a parallel model
+would predict.
 
 | File | What it covers |
 |---|---|
-| `settle.go` | `Terms`, `Settle`, `LiquidationPrice`, the dust limit. Arithmetic in `math/big` because BigNum is, and because the intermediate product overflows int64 |
-| `oracle.go` | The `sha256(ticker \|\| price \|\| timestamp)` digest and the two-sided freshness window |
+| `settlement.go` | `Terms` and `SettlementScript()` — builds the script with `txscript.NewScriptBuilder` and the opcodes `pkg/arkade` exports |
+| `vm.go` | The harness: an `ArkPrevOutFetcher`, a synthetic spending transaction, and `Run` to execute a script on `arkade.NewEngine` |
 
-The tests pin collateral conservation across a price sweep, the direction of truncation, the
-liquidation clamp on the boundary, the int64 overflow, and that `LiquidationPrice` agrees with
-`Settle`.
+All arithmetic runs on the VM, including `hedgeValueCents * 1e8` — folding that into a build-time
+constant overflows int64 for a large enough position, and BigNum is the only arithmetic here
+without a ceiling.
+
+Expected payouts are written out in the test table, never computed. If the table and the VM
+disagree, the VM is what settles real money.
+
+Currently pinned: the split at four prices, the clamp exactly on the liquidation boundary,
+truncation direction, the int64 overflow, six ways of underpaying a side, and script determinism.
+
+> **What the VM taught us**: just above the liquidation price the long is owed 4 sats, which is
+> dust, so no second output is created and everything legitimately goes to the hedge. Liquidation
+> has a dust *band*, not a single point.
+
+### Verification
+
+The service builds the tree and sends it whole. The client does not rebuild it — it **recognises**
+it:
+
+1. Derive the taproot address from the leaves it was sent and compare it with the address it is
+   about to fund. A match proves there is no fourth leaf, since the address commits to the whole
+   tree
+2. Match each leaf against the known contract templates. A hit renders human-readably from the
+   parameters, which arrive structured. A miss is a hard stop — unknown contract, do not fund
+
+Failing closed is the point: never "unrecognised but probably fine". This is the same shape as
+arkd's own closure whitelist. As contract versions accumulate the client carries several templates
+and tries each.
+
+The verifier duplicates the builder, so CI pins both to a golden hex fixture. Two implementations
+that must agree byte for byte will diverge silently otherwise.
 
 ---
 
