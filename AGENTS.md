@@ -1,7 +1,10 @@
 # AGENTS.md — Arkade Hedge
 
-> **Language rule**: code, identifiers and code comments in **English**, always.
-> Prose docs (`README.md`, specs) are currently written in Spanish — keep them Spanish.
+> **Language rule**: everything in **English** — code, identifiers, comments, prose docs and
+> commit messages are the exception: commits stay Spanish, with no `Co-Authored-By` trailer.
+
+> **Terminology**: Arkade's docs deprecate "ASP", "Ark server", "round" and "Ark transaction". Use
+> **operator**, **Arkade Service**, **batch swap** and **Arkade transaction**.
 
 ## Project overview
 
@@ -66,10 +69,23 @@ all need real execution.
 - **Oracle message format is fixed**: `sha256(ticker || price || timestamp)`, price and timestamp
   as 8-byte LE unsigned, price in USD cents per BTC. Freshness `0 <= age <= 600s`. Reject
   future-dated prices explicitly
+- **The settlement math runs in the covenant, never on our server.** `covenant/` is a Go test
+  double used to check the VM, not a runtime component. Any design that computes the split
+  service-side is wrong
 - **Exit leaves drop the covenant.** One CSV 2-of-2 leaf (hedge + long); the exit transaction is
   **pre-signed at funding** and sweeps to a 2-of-3 `{hedge, long, service}`. Pre-signing is what
   makes it unilateral — either party broadcasts it alone once the CSV matures, and neither can
   redirect the destination. Full write-up in README §"Leaf 3"
+- **Two path classes, two rules.** Collaborative paths (no CSV) must carry the operator pubkey and
+  use CLTV for timelocks; unilateral paths (CSV) omit the operator and need a delay at or above
+  `getInfo().exitDelay`. arkd classifies each closure and applies the matching rule
+  (`vtxo_script.go:93`)
+- **Maturity is gated in the covenant, not by a tapscript CLTV.** A leaf-level CLTV is
+  unconditional and would block early liquidation. Use `tx.offchainTime >= maturityTime` inside the
+  covenant
+- **Two timebases, don't mix them.** `tx.time` is Bitcoin `nLockTime` (consensus, via CLTV);
+  `tx.offchainTime` is the TEE introspector's wallclock in Unix seconds. We use the latter. It is
+  not monotonic, so every subtraction from it needs a `>= 0` guard
 - **The 2-of-3 lives in the sweep destination, not in a leaf.** Inside a VTXO every closure is
   N-of-N; outside it, the destination is any Bitcoin output script and a real threshold is fine
 - **No m-of-n in a `tapscript` leaf.** arkd's `MultisigClosure` is always N-of-N; its decoder

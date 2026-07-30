@@ -1,157 +1,182 @@
-# Arkade Hedge Contract — Spec (inspirado en AnyHedge de BCH)
+# Arkade Hedge Contract — Spec (after BCH's AnyHedge)
 
-## Objetivo
+## Goal
 
-Portar el protocolo AnyHedge (Bitcoin Cash, en producción desde 2020, ~$4.9M TVL vía BCH Bull)
-a Arkade/Ark, aprovechando la VM de introspección + aritmética del emulador de Arkade para la
-lógica de negocio, y resolviendo la salida unilateral (que en Ark cae a Bitcoin L1 puro, sin esos
-opcodes) con un camino de emergencia separado.
+Port AnyHedge (Bitcoin Cash, in production since 2020, ~$4.9M TVL through BCH Bull) to Arkade,
+using the emulator's introspection + arithmetic VM for the business logic and solving the
+unilateral exit — which on Bitcoin L1 has none of those opcodes — with a separate emergency path.
 
-Referencia original: `anyhedge.cash`
+Original reference: `anyhedge.cash`
 (https://gitlab.com/GeneralProtocols/anyhedge/library/-/blob/development/lib/anyhedge.cash)
 
+> **Terminology**: Arkade's docs deprecate "ASP", "Ark server" and "round". This spec uses
+> **operator** for the entity running the Arkade Service, **batch swap** for the process that
+> settles VTXOs onchain, and **Arkade transaction** for an offchain transfer.
+
 ---
 
-## Estado y decisiones tomadas
+## Status and settled decisions
 
-| Decisión | Valor | Fecha |
+| Decision | Value | Date |
 |---|---|---|
-| Producto | **Plazo fijo** (AnyHedge), no perpetuo | 2026-07-27 |
-| Base del contrato | `stability_vault.ark` del repo `arkade-os/compiler` | 2026-07-27 |
-| Oráculo | **Operado por nosotros**, formato Fuji/stability | 2026-07-27 |
-| Salida de emergencia | Una hoja CSV 2-de-2, pre-firmada al fondear, barriendo a un 2-de-3 | 2026-07-30 |
-| Cierre mutuo anticipado | **Al precio del oráculo**, no a reparto libre. Ninguna hoja reparte a discreción | 2026-07-30 |
-| Estructura | 3 hojas: 2 de covenant (off-chain) + 1 de salida (L1). Sólo la salida toca Bitcoin | 2026-07-30 |
-| Lenguaje | TypeScript (contrato + servicio) + arnés de tests en Go | 2026-07-27 |
-| Funding rate | **Descartado** — es lo que hace perpetuo a stability | 2026-07-27 |
+| Product | **Fixed term** (AnyHedge), not perpetual | 2026-07-27 |
+| Contract base | `stability_vault.ark` from `arkade-os/compiler` | 2026-07-27 |
+| Oracle | **Run by us**, Fuji/stability format | 2026-07-27 |
+| Emergency exit | One CSV 2-of-2 leaf, pre-signed at funding, sweeping to a 2-of-3 | 2026-07-30 |
+| Early mutual close | **At the oracle price**, not a free split. No leaf settles at anyone's discretion | 2026-07-30 |
+| Structure | 3 leaves: 2 covenant (offchain) + 1 exit (L1). Only the exit touches Bitcoin | 2026-07-30 |
+| Maturity gate | `tx.offchainTime` inside the covenant, **not** a tapscript CLTV | 2026-07-30 |
+| Language | TypeScript (contract + service), Go for the settlement math and VM tests | 2026-07-27 |
+| Funding rate | **Dropped** — it is what makes stability perpetual | 2026-07-27 |
 
-**Viabilidad: confirmada opcode a opcode.** Todo lo que la spec necesita existe en la VM del
-emulador y resuelve desde el SDK de TypeScript. Ver §Viabilidad verificada.
+**The settlement math lives in the covenant**, executed by the emulator VM. The Go package in
+`covenant/` is a test double used to check the VM, not a component of the running system. See
+§`covenant/`.
+
+**Viability: confirmed opcode by opcode.** Everything the spec needs exists in the emulator VM and
+resolves from the TypeScript SDK. See §Verified viability.
 
 ---
 
-## Punto de partida: `stability_vault.ark`
+## Starting point: `stability_vault.ark`
 
-`../compiler/examples/stability/stability_vault.ark` (355 líneas) es este mismo contrato con
-otros nombres. No lo reescribimos desde cero — lo adaptamos.
+`../compiler/examples/stability/stability_vault.ark` (355 lines) is this same contract under
+different names. We adapt it rather than rewrite it.
 
-| Esta spec | stability_vault |
+| This spec | stability_vault |
 |---|---|
-| Hedge (short 1x, valor USD fijo) | `seeker` — "holds a fixed USD value" |
-| Short/Long (colateral extra, long apalancado) | `provider` — "leveraged BTC long" |
+| Hedge (short 1x, fixed USD value) | `seeker` — "holds a fixed USD value" |
+| Long (extra collateral, leveraged long) | `provider` — "leveraged BTC long" |
 | `hedgePayoutInBtc = hedgeValue / endPrice` | `seekerRaw = newTargetUSD * 100000000 / oraclePrice` |
-| `output_hedge + output_cp == totalLockedBtc` | `providerPayout = totalCollateral - seekerRaw` |
-| `lowLiquidationPrice` | `if (seekerRaw >= totalCollateral)` → hedge se lleva todo |
-| `highLiquidationPrice` | `if (seekerRaw <= 0)` → contraparte se lleva todo |
+| `output_hedge + output_long == totalCollateral` | `providerPayout = totalCollateral - seekerRaw` |
+| `lowLiquidationPrice` | `if (seekerRaw >= totalCollateral)` → hedge takes everything |
+| `highLiquidationPrice` | `if (seekerRaw <= 0)` → counterparty takes everything |
 
-Los umbrales de liquidación de AnyHedge y el clamp de stability son la misma cosa: la condición
-`seekerRaw >= totalCollateral` **es** el precio de liquidación bajo, calculado en vez de
-precomputado. Esto elimina la necesidad de derivar los umbrales del leverage por separado.
+AnyHedge's liquidation thresholds and stability's clamp are the same thing: the condition
+`seekerRaw >= totalCollateral` **is** the low liquidation price, computed instead of precomputed.
+That removes the need to derive thresholds from leverage separately.
 
-**Qué hay que añadir sobre stability**: `maturityTime` (stability es perpetuo), el cierre mutuo
-anticipado — que reutiliza el mismo covenant con otro disparador — y la salida de emergencia
-bipartita, porque stability sale con firma única.
+**What to add on top of stability**: `maturityTime` (stability is perpetual), the early mutual
+close — which reuses the same covenant with a different trigger — and a two-party emergency exit,
+because stability exits with a single signature.
 
-**Qué hay que quitar**: `fundingRatePerSec` y toda la acumulación asociada (`lastUpdate`,
-`elapsed`, `delta`). Un contrato a plazo fijo no paga funding; el precio de la cobertura se paga
-por fuera al abrir la posición.
-
----
-
-## Actores
-
-- **Hedge**: quiere preservar el valor de su BTC en términos de un activo externo (USD, oro...).
-  Posición equivalente a "short 1x".
-- **Long**: contraparte especuladora, apuesta en la dirección opuesta del precio. Aporta el
-  colateral extra que garantiza el payout del Hedge.
-- **Oráculo**: firma mensajes de precio periódicamente. Operado por nosotros. No conoce la
-  existencia de ningún contrato concreto.
-- **Servicio**: coordina, construye la transacción de liquidación y es la tercera clave del 2-de-3
-  al que barre la salida de emergencia — no de ninguna hoja. No custodia fondos ni decide el
-  reparto: sólo ejecuta la fórmula.
-- **Emulador (ASP)**: co-firma la liquidación si el Arkade Script pasa. No es Bitcoin consensus.
+**What to remove**: `fundingRatePerSec` and all the accrual around it (`lastUpdate`, `elapsed`,
+`delta`). A fixed-term contract pays no funding; the price of the hedge is paid outside the
+contract when the position is opened.
 
 ---
 
-## Parámetros del contrato (fijados al crear)
+## Actors
 
-| Parámetro | Tipo | Descripción |
+- **Hedge**: wants to preserve the value of their BTC in terms of an external asset (USD, gold…).
+  Equivalent to a 1x short.
+- **Long**: the speculating counterparty, betting the opposite direction. Posts the extra
+  collateral that backs the hedge payout.
+- **Oracle**: signs price messages periodically. Run by us. Knows nothing about any particular
+  contract.
+- **Service**: coordinates, builds the settlement transaction, and is the third key of the 2-of-3
+  the emergency exit sweeps into — not of any leaf. Never custodies funds and never decides the
+  split: it only executes the formula.
+- **Emulator**: co-signs settlement if the Arkade Script passes. Not Bitcoin consensus.
+- **Operator**: runs the Arkade Service, co-signs collaborative paths, and settles batches onchain.
+
+---
+
+## Contract parameters (fixed at creation)
+
+| Parameter | Type | Description |
 |---|---|---|
-| `hedgePk` | pubkey | Clave del lado Hedge |
-| `longPk` | pubkey | Clave del lado Long |
-| `servicePk` | pubkey | Clave del servicio (sólo para hojas de emergencia) |
-| `oraclePk` | pubkey | Clave pública del oráculo de precio |
-| `ticker` | bytes32 | Identificador del feed, p.ej. `sha256("BTC/USD")` |
-| `hedgeValueCents` | int | Valor que el Hedge protege, en céntimos de USD. Constante |
-| `totalCollateral` | int | Suma de los aportes de ambas partes, en sats. Constante |
-| `maturityTime` | int | Unix seconds. Vencimiento normal |
-| `exit` | int | Delay CSV de las hojas de emergencia (segundos, múltiplo de 512) |
+| `hedgePk` | pubkey | Hedge side key |
+| `longPk` | pubkey | Long side key |
+| `servicePk` | pubkey | Service key — used only in the 2-of-3 exit destination |
+| `oraclePk` | pubkey | Price oracle public key |
+| `ticker` | bytes32 | Feed identifier, e.g. `sha256("BTC/USD")` |
+| `hedgeValueCents` | int | USD value the hedge locks in, in cents. Constant |
+| `totalCollateral` | int | Sum of both contributions, in sats. Constant |
+| `maturityTime` | int | Unix seconds. Normal expiry |
+| `exit` | int | CSV delay on the exit leaf (seconds, multiple of 512, ≥ `getInfo().exitDelay`) |
 
-`hedgeLeverage` es 1x por definición. El leverage del Long es implícito en el ratio
-`totalCollateral / hedgeValueCents` — no es un parámetro del contrato, es una consecuencia de
-cuánto aporta cada lado al fondear.
+`hedgeLeverage` is 1x by definition. The long's leverage is implicit in the ratio
+`totalCollateral / hedgeValueCents` — it is not a contract parameter, it is a consequence of how
+much each side puts in at funding.
 
 ---
 
-## Fórmulas
+## Formulas
 
-Sin funding rate, `hedgeValueCents` es constante, así que la matemática de liquidación colapsa a:
+With no funding rate, `hedgeValueCents` is constant and the settlement math collapses to:
 
 ```
 hedgePayoutSats = clamp(hedgeValueCents * 1e8 / oraclePrice, 0, totalCollateral)
 longPayoutSats  = totalCollateral - hedgePayoutSats
 ```
 
-Unidades: `hedgeValueCents` [céntimos] × `1e8` [sats/BTC] ÷ `oraclePrice` [céntimos/BTC] = [sats].
-`OP_DIV` trunca, y el truncamiento va siempre en contra de quien construye la transacción.
+Units: `hedgeValueCents` [cents] × `1e8` [sats/BTC] ÷ `oraclePrice` [cents/BTC] = [sats].
+`OP_DIV` truncates, and truncation always costs the hedge side the fraction and hands it to the
+long.
 
-**Invariante de conservación** (clave para simplificar la introspección):
-el total de BTC bloqueado nunca cambia, sólo se redistribuye entre las dos partes.
+**Conservation invariant** — the reason the introspection stays simple. The total locked never
+changes, it only gets redistributed:
 
 ```
 output_hedge.value + output_long.value == totalCollateral
 ```
 
-Por tanto el covenant sólo necesita verificar:
-1. `output_hedge.value >= hedgePayoutSats` (calculado con la firma del oráculo)
-2. `output_long.value >= totalCollateral - hedgePayoutSats` (el resto, sin recalcular)
+So the covenant only has to check:
+1. `output_hedge.value >= hedgePayoutSats` (computed from the oracle-signed price)
+2. `output_long.value >= totalCollateral - hedgePayoutSats` (the remainder, never recomputed)
 
-Con salvaguarda de dust: si un payout cae por debajo de 330 sats, se omite la salida
-(mismo patrón que `stability_vault.ark:294`).
+With a dust guard: a payout at or below 330 sats gets no output at all (same pattern as
+`stability_vault.ark:294`, which tests `> 330`).
 
 ---
 
-## Formato del mensaje del oráculo
+## Oracle message format
 
-Adoptamos tal cual el formato Fuji/stability (`stability_vault.ark:22-28`), porque operamos el
-oráculo nosotros y este formato ya está probado a través del compilador:
+We adopt the Fuji/stability format unchanged (`stability_vault.ark:22-28`), because we run the
+oracle ourselves and this encoding is already proven through the compiler:
 
 ```
 msg = sha256(ticker || price || timestamp)
 sig = sign(oraclePk, msg)
 ```
 
-- `price` y `timestamp`: enteros **8 bytes little-endian unsigned**
-- `price` en céntimos de USD por BTC
-- `ticker` permite añadir feeds sin tocar el contrato
+- `price` and `timestamp`: **8-byte little-endian unsigned** integers
+- `price` in USD cents per BTC
+- `ticker` lets us add feeds without touching the contract
 
-Comprobaciones de frescura en el covenant:
+Freshness checks inside the covenant:
 
 ```
 oracleAge = tx.offchainTime - oracleTime
-require(oracleAge >= 0,   "future-dated oracle")   // rechaza precios futuros
-require(oracleAge <= 600, "stale oracle")          // ventana de 10 minutos
+require(oracleAge >= 0,   "future-dated oracle")   // reject future-dated prices
+require(oracleAge <= 600, "stale oracle")          // 10-minute window
 ```
 
-Verificación con `checkSigFromStack(oracleSig, oraclePk, oracleMsg)` — `OP_CHECKSIGFROMSTACK`
-(`0xcc`), firma compacta de 64 bytes, pubkey Schnorr x-only de 32 bytes.
+Verified with `checkSigFromStack(oracleSig, oraclePk, oracleMsg)` — `OP_CHECKSIGFROMSTACK`
+(`0xcc`), 64-byte compact signature, 32-byte x-only Schnorr pubkey.
+
+### Which clock `tx.offchainTime` is
+
+Arkade Script exposes two timebases with different trust properties:
+
+| | What it is | Enforced by |
+|---|---|---|
+| `tx.time` | Bitcoin `nLockTime` | Consensus, via a CLTV in the tapscript |
+| `tx.offchainTime` | The TEE introspector's wallclock, in Unix seconds | The emulator's TEE |
+
+We use `tx.offchainTime`. It is the one that supports a 10-minute window, and the one that can gate
+maturity without a tapscript CLTV (see Leaf 1). It rests on the same TEE assumption as the rest of
+the covenant — no new trust anchor, no consensus behind it either.
+
+The TEE wallclock is **not guaranteed monotonic**, so every subtraction from it needs a
+non-negative guard. Without `require(oracleAge >= 0)` a future-dated price is replayable.
 
 ---
 
-## Estructura Taproot
+## Taproot structure
 
-Internal key = **NUMS** (Nothing Up My Sleeve) — sin key-path spendable, fuerza a usar una de las
-ramas del árbol.
+Internal key = **NUMS** (Nothing Up My Sleeve) — no key-path spend, forcing one of the branches.
 
 ```
                 Taproot output (NUMS internal key)
@@ -159,193 +184,231 @@ ramas del árbol.
         ┌───────────────────┼───────────────────┐
         |                   |                   |
       Leaf 1              Leaf 2              Leaf 3
-   Liquidación        Cierre mutuo          Salida de
-   /vencimiento       anticipado            emergencia
-                                          
-   covenant+oráculo   covenant+oráculo      CSV 2-de-2
-   disparo: maturity  disparo: firman        hedge+long
-   o liquidación      ambas partes         (pre-firmada)
+   Settlement         Early mutual         Emergency
+   at maturity        close                exit
 
-   ── forfeit closures (sin CSV) ──      ── exit closure ──
-     llevan la clave del servidor         sin servidor,
-     obligatoriamente, gasto off-chain    gasto en L1 tras el CSV
+   covenant+oracle    covenant+oracle      CSV 2-of-2
+   trigger: matured   trigger: both         hedge+long
+   or liquidated      parties sign         (pre-signed)
+
+   ── collaborative paths (no CSV) ──   ── unilateral path ──
+     must carry the operator key,        no operator key,
+     spent offchain, instantly           spent on L1 after the CSV
 ```
 
-### Leaf 1 — Liquidación / vencimiento
-- Covenant completo, co-firmado por el emulador
-- `checkSigFromStack` valida el mensaje de precio firmado por el oráculo
-- `MUL`/`DIV` calculan `hedgePayoutSats`
-- `INSPECTOUTPUTVALUE` fuerza la conservación
-- Trigger: `tx.offchainTime >= maturityTime` **o** `hedgePayoutSats >= totalCollateral`
-  (liquidación anticipada — el Long se quedó sin colateral)
-- Normalmente **no se transmite a Bitcoin** — se resuelve dentro de una ronda de Arkade
+### Leaf 1 — Settlement at maturity or liquidation
+- Full covenant, co-signed by the emulator
+- `checkSigFromStack` validates the oracle-signed price message
+- `MUL`/`DIV` compute `hedgePayoutSats`
+- `INSPECTOUTPUTVALUE` enforces conservation
+- Trigger: `tx.offchainTime >= maturityTime` **or** `hedgePayoutSats >= totalCollateral`
+  (early liquidation — the long ran out of collateral)
 
-### Leaf 2 — Cierre mutuo anticipado, al precio del oráculo
-- Claves: Hedge + Long + emulador (tweakeada) + servidor
-- **Mismo covenant y misma fórmula que la Leaf 1.** Lo único que cambia es el disparador: en vez
-  de `matured || liquidated`, basta con que ambas partes firmen
-- Off-chain, dentro de una ronda de Arkade
+**What settling actually does.** It spends the contract VTXO and creates two new VTXOs, one owned
+by the hedge and one owned by the long, sized by the formula. The sats do move to each side; they
+move offchain, as an Arkade transaction, so it is instant and costs no block space.
 
-El reparto **no se negocia**: sale de `hedgePayoutSats` sobre el último precio firmado, igual que
-en la liquidación. Ninguna hoja del contrato reparte a discreción — o arbitra el oráculo, o no se
-gasta. Un cierre mutuo con reparto libre sería el único camino sin covenant, y no compra nada que
-no dé ya la Leaf 3.
+Each party then holds an ordinary VTXO. Taking it to Bitcoin L1 is a separate, later decision —
+collaboratively by offboarding, or unilaterally through its own exit path. The contract does not
+force that step and does not need it.
 
-Coste asumido: si el oráculo cae **no hay salida cooperativa rápida**, porque las dos hojas de
-covenant lo necesitan. Un oráculo caído se trata entonces igual que un emulador caído — se sale
-por la Leaf 3. Un solo modo de fallo con una sola escotilla, en vez de dos caminos que mantener.
+**Why the maturity gate is not a CLTV.** A tapscript CLTV applies to the whole leaf
+unconditionally, so a leaf gated on `CLTV(maturityTime)` could not also fire early on liquidation.
+The `matured || liquidated` disjunction lives in the covenant instead, reading `tx.offchainTime`,
+and the tapscript segment carries no timelock.
 
-### Por qué las hojas 1 y 2 llevan la clave del servidor y la 3 no
+Both triggers share one leaf because they differ only in a condition, not in the key set.
 
-arkd parte las closures en dos clases (`vtxo_script.go:93`) y las valida distinto:
+### Leaf 2 — Early mutual close, at the oracle price
+- Keys: hedge + long + emulator (tweaked) + operator
+- **Same covenant and same formula as Leaf 1.** The only difference is the trigger: instead of
+  `matured || liquidated`, both parties sign
+- Offchain, as an Arkade transaction
 
-- **Forfeit closures** — las que **no** llevan CSV (hojas 1 y 2). *Tienen* que incluir la clave del
-  servidor, o `Validate` devuelve `invalid forfeit closure, signer pubkey not found`. A cambio se
-  gastan off-chain, al instante
-- **Exit closures** — las que llevan CSV (hoja 3). No necesitan al servidor, pero sólo se gastan en
-  L1, tras desenrollar la VTXO y esperar el delay
+The split is **not negotiated**: it comes from `hedgePayoutSats` on the latest signed price, same
+as at settlement. No leaf in this contract settles at anyone's discretion — either the oracle
+arbitrates or the output cannot be spent. A mutual close with a free split would be the contract's
+only covenant-free path, and it buys nothing Leaf 3 does not already provide.
 
-Es coherente: una hoja sin timelock y sin el servidor permitiría gastar en cadena una VTXO cuyo
-historial off-chain el servidor ya había garantizado. El nombre lo dice todo — *forfeit*.
+Accepted cost: if the oracle goes down there is **no fast cooperative way out**, because both
+covenant leaves need it. A dead oracle is then handled exactly like a dead emulator — you leave
+through Leaf 3. One failure mode with one escape hatch, instead of two paths to maintain.
 
-En una frase: **las hojas 1 y 2 son el camino rápido y pagan el peaje de la clave del servidor; la
-3 es el camino lento y paga el peaje del CSV.** El servidor puede bloquear las dos primeras, no
-puede bloquear la tercera.
+### Why leaves 1 and 2 carry the operator key and leaf 3 does not
 
-### Leaf 3 — Salida de emergencia
+Arkade has two protocol rules for spending paths. arkd classifies each closure
+(`vtxo_script.go:93`) and applies the matching rule:
 
-Ark exige una salida unilateral que no dependa del emulador. Como el covenant se cae en esa
-salida, **no puede ser de firma única**: quien la ejecutase se llevaría todo el colateral,
-incluido el de la otra parte.
+- **Collaborative path** — no CSV (leaves 1 and 2). Must include the operator pubkey, or `Validate`
+  returns `invalid forfeit closure, signer pubkey not found`. Spent offchain, instantly
+- **Unilateral path** — CSV (leaf 3). Does not include the operator. Requires a CSV delay at or
+  above `getInfo().exitDelay`, and is spent on L1 after unrolling the VTXO and waiting out the
+  delay
 
-Hay que separar dos capas, y es el punto donde es fácil equivocarse:
+Leaves 1 and 2 are fast and the operator can block them. Leaf 3 is slow and the operator cannot.
+
+Timelock types are not interchangeable: collaborative paths use CLTV (absolute, Unix seconds), CSV
+is reserved for unilateral exit paths. Both are seconds-based; block-height timelocks are rejected.
+
+### Leaf 3 — Emergency exit
+
+Arkade requires a unilateral exit that does not depend on the emulator. Since the covenant is gone
+on that path it **cannot be single-signature**: whoever executed it would walk away with the whole
+collateral, including the other side's.
+
+Two layers have to be kept apart:
 
 ```
-Hoja (condición de gasto):  CSV + 2-de-2 (hedgePk, longPk)      <- dentro de Ark, N-de-N obligatorio
-Destino (output script):    2-de-3 {hedgePk, longPk, servicePk} <- Bitcoin normal, sin restricciones
+Leaf (spending condition):  CSV + 2-of-2 (hedgePk, longPk)       <- inside Arkade, N-of-N mandatory
+Destination (output script): 2-of-3 {hedgePk, longPk, servicePk} <- plain Bitcoin, unconstrained
 ```
 
-Dentro de la VTXO todas las closures que arkd sabe decodificar son N-de-N — no hay umbrales. Pero
-el **destino** del barrido es *"any Bitcoin Output Script"*: una vez el CSV vence y la transacción
-está en cadena, arkd no pinta nada y un 2-de-3 real es trivial.
+Inside the VTXO every closure arkd can decode is N-of-N — there are no thresholds. But the sweep
+**destination** is *"any Bitcoin Output Script"*: once the CSV matures and the transaction is
+onchain, arkd has no say and a real 2-of-3 is trivial.
 
-**La transacción de salida se pre-firma al fondear**, con las dos partes cooperando:
+**The exit transaction is pre-signed at funding**, with both parties cooperating:
 
 ```
-input:   la VTXO, gastada por Leaf 3 (nSequence = exit)
-output:  el 2-de-3 {hedge, long, service}
-firmas:  hedge + long, recogidas en el momento del funding
+input:   the VTXO, spent via Leaf 3 (nSequence = exit)
+output:  the 2-of-3 {hedge, long, service}
+sigs:    hedge + long, both collected at funding time
 ```
 
-Eso es lo que la hace unilateral: a partir de ahí **cualquiera de las dos partes la difunde sola**
-cuando vence el CSV, sin negociar nada con la otra — que es justo lo que no se puede asumir en una
-emergencia. Y es también lo que impide el robo: sólo existe **una** transacción firmada, y su
-destino es fijo. Redirigirla exigiría la firma de la contraparte.
+Pre-signing is what makes it unilateral: from then on **either party broadcasts it alone** when the
+CSV matures, with nothing to negotiate. It is also what prevents theft — only **one** signed
+transaction exists and its destination is fixed. Redirecting it would need the counterparty's
+signature.
 
-| Riesgo | Cómo queda cubierto |
+| Risk | How it is covered |
 |---|---|
-| Que una parte robe el colateral de la otra | La única tx firmada va al 2-de-3; nadie desvía el destino |
-| Que una parte desaparezca y bloquee la salida | La tx ya está firmada; la otra la difunde sola |
-| Que una parte desaparezca tras la salida | En el 2-de-3, la otra parte + el servicio mueven los fondos |
+| One party steals the other's collateral | The only signed tx goes to the 2-of-3; nobody can redirect it |
+| One party vanishes and blocks the exit | The tx is already signed; the other broadcasts it alone |
+| One party vanishes after the exit | In the 2-of-3, the other party + the service move the funds |
 
-**Consecuencia**: cuando los fondos aterrizan en el 2-de-3, el covenant ya no reparte. El split lo
-resuelven los firmantes del vault — por acuerdo, o con el servicio arbitrando según el precio del
-oráculo. Es inherente a cualquier exit: un exit siempre tira el covenant.
+**Consequence**: once the funds land in the 2-of-3 the covenant no longer settles. The split is
+resolved by the vault's signers — by agreement, or with the service arbitrating on the oracle
+price. This is inherent to any exit: an exit always drops the covenant.
 
-Riesgo conocido y aceptado: colusión Servicio + una de las partes dentro del 2-de-3. Mitigación: el
-servicio firma de forma determinista según el último precio firmado por el oráculo, nunca a
-discreción manual; cada firma queda acompañada de la del oráculo como prueba pública auditable.
+Known and accepted risk: collusion between the service and one party inside the 2-of-3. Mitigation:
+the service signs deterministically from the latest oracle-signed price, never at manual
+discretion, and every signature is accompanied by the oracle's as publicly auditable evidence.
 
-> **Nota**: todos los contratos de ejemplo del compilador (`fuji_safe`, `cash_secured_put`,
-> `stability_vault`, `bond_mint`...) usan un exit de firma única. Es correcto para contratos de
-> un solo dueño; aquí hay dos partes con dinero dentro, y un exit single-sig sería una superficie
-> de robo — la misma crítica que la documentación de Arkade hace a `repayment_pool.ark`.
+> **Note**: every example contract in the compiler (`fuji_safe`, `cash_secured_put`,
+> `stability_vault`, `bond_mint`…) uses a single-signature exit, which works for single-owner
+> contracts. Here two parties have money inside, so a single-sig exit is a theft surface — the same
+> criticism Arkade's documentation makes of `repayment_pool.ark`.
 
 ---
 
-## Viabilidad verificada
+## Verified viability
 
-Comprobado contra `arkade-os/emulator` (`pkg/arkade`), `@arkade-os/sdk` 0.4.51 y
+Checked against `arkade-os/emulator` (`pkg/arkade`), `@arkade-os/sdk` 0.4.51 and
 `arkade-os/compiler` @ `3988a9d`.
 
-| Necesidad | Opcode | Origen |
+| Need | Opcode | Source |
 |---|---|---|
-| `hedgeValue / endPrice` | `MUL` (0x95), `DIV` (0x96), `MOD` (0x97) | Legacy reactivados, vía el enum `OP` de `@scure/btc-signer` |
-| Precio firmado por oráculo | `CHECKSIGFROMSTACK` (0xcc) | `ARKADE_OP` |
-| Reconstruir el mensaje | `CAT`, `SUBSTR`, `NUM2BIN`, `BIN2NUM` | Mixto |
-| Conservación de valor | `INSPECTOUTPUTVALUE` (0xcf) | `ARKADE_OP` |
-| Umbrales | `GREATERTHANOREQUAL`, `LESSTHAN` | Bitcoin base |
-| Vencimiento | CLTV en el tapscript | — |
+| `hedgeValue / endPrice` | `MUL` (0x95), `DIV` (0x96), `MOD` (0x97) | Re-enabled legacy, via `@scure/btc-signer`'s `OP` enum |
+| Oracle-signed price | `CHECKSIGFROMSTACK` (0xcc) | `ARKADE_OP` |
+| Rebuilding the message | `CAT`, `SUBSTR`, `NUM2BIN`, `BIN2NUM` | Mixed |
+| Value conservation | `INSPECTOUTPUTVALUE` (0xcf) | `ARKADE_OP` |
+| Thresholds | `GREATERTHANOREQUAL`, `LESSTHAN` | Bitcoin base |
+| Maturity | `tx.offchainTime` (TEE wallclock) | Emulator introspection, no tapscript timelock |
 
-Todos resuelven vía `ARKADE_OPS = { ...OP, ...ARKADE_OP }` en el SDK.
+All resolve through `ARKADE_OPS = { ...OP, ...ARKADE_OP }` in the SDK.
 
-BigNum es de precisión arbitraria hasta 520 bytes. El análisis de error numérico publicado de
-AnyHedge existe porque BCH trabajaba con enteros de 64 bits; aquí no hay techo de overflow. Queda
-el truncamiento de `DIV`, que se gestiona con escala fija a 1e8 igual que stability.
+BigNum is arbitrary precision up to 520 bytes. AnyHedge's published numerical error analysis exists
+because BCH worked with 64-bit integers; there is no overflow ceiling here. What remains is `DIV`
+truncation, handled with a fixed 1e8 scale exactly as stability does.
 
 ---
 
 ## Stack
 
-- **Entorno**: `nix develop` (flake en la raíz) — Go 1.26.5 y Node 22, reproducible
-- **Contrato**: objeto `Program` del SDK de TypeScript (`@arkade-os/sdk`)
-- **Servicio web**: TypeScript / Node.js 22
-- **Matemática de liquidación + tests del covenant**: Go, en `covenant/`, contra
+- **Environment**: `nix develop` (flake at the repo root) — Go 1.26.5 and Node 22, reproducible
+- **Contract**: SDK `Program` object (`@arkade-os/sdk`)
+- **Web service**: TypeScript / Node.js 22
+- **Settlement math + covenant tests**: Go, in `covenant/`, against
   `github.com/arkade-os/emulator/pkg/arkade`
-- **Integración**: nigiri + arkd + arkd-wallet + emulator vía Docker Compose
+- **Integration**: nigiri + arkd + arkd-wallet + emulator via Docker Compose
 
-`arkadec` (el `.ark`) se usa como **spec legible**, no está en el build path — ver AGENTS.md
-§Toolchain.
+`arkadec` (the `.ark` file) is kept as **readable spec** and is not on the build path — see
+AGENTS.md §Toolchain.
 
 ```sh
 nix develop                      # Go 1.26.5 + Node 22
 cd covenant && go test ./...
 ```
 
-### `covenant/` — implementación de referencia
+### `covenant/` — reference implementation, not the product
 
-Módulo Go sin dependencias que reproduce la aritmética de liquidación **opcode a opcode**,
-truncamiento incluido. Es el oráculo contra el que se contrasta la VM: si este paquete y la VM no
-coinciden, hay un bug en uno de los dos, no una diferencia de redondeo.
+> **The settlement math runs in the covenant, on the emulator VM — never on our server.** A
+> service-side split would mean the parties trust us to divide their collateral, which is the
+> property this contract exists to remove.
 
-| Fichero | Qué cubre |
+`covenant/` is a dependency-free Go module reproducing that arithmetic **opcode by opcode**,
+truncation included. It is what the VM gets checked against: if this package and the VM disagree,
+one of them has a bug, and it is not a rounding difference.
+
+| File | What it covers |
 |---|---|
-| `settle.go` | `Terms`, `Settle`, `LiquidationPrice`, límite de dust. Aritmética en `math/big` porque BigNum lo es y porque el producto intermedio desborda int64 |
-| `oracle.go` | Digest `sha256(ticker \|\| price \|\| timestamp)` y ventana de frescura de dos lados |
+| `settle.go` | `Terms`, `Settle`, `LiquidationPrice`, the dust limit. Arithmetic in `math/big` because BigNum is, and because the intermediate product overflows int64 |
+| `oracle.go` | The `sha256(ticker \|\| price \|\| timestamp)` digest and the two-sided freshness window |
 
-Los tests fijan la conservación del colateral en un barrido de precios, la dirección del
-truncamiento, el clamp de liquidación exactamente en el borde, el desbordamiento de int64, y que
-`LiquidationPrice` coincide con `Settle` (el servicio no puede enseñar un número y el covenant
-actuar sobre otro).
+The tests pin collateral conservation across a price sweep, the direction of truncation, the
+liquidation clamp on the boundary, the int64 overflow, and that `LiquidationPrice` agrees with
+`Settle`.
 
 ---
 
-## Diferencias clave vs. AnyHedge (BCH)
+## Key differences vs. AnyHedge (BCH)
 
 | | BCH (AnyHedge) | Arkade |
 |---|---|---|
-| Dónde corre el covenant rico | Consenso de nodos BCH, on-chain, siempre | VM del emulador, off-chain, mientras el ASP coopera |
-| Camino de emergencia | No existe — el camino rico ya es la capa final | Leaf 3 + paquete pre-firmado, necesario porque Bitcoin L1 no valida introspección |
-| Velocidad de liquidación | Requiere confirmación en bloque BCH | Instantánea, off-chain (salvo Leaf 3) |
-| Seguridad de base | Hashrate/seguridad de BCH | Hereda seguridad de Bitcoin L1 |
-| Confianza requerida en camino normal | Ninguna — el nodo valida | Honestidad del ASP (mitigada por Leaf 3 como red de seguridad) |
-| Umbrales de liquidación | Precomputados desde el leverage | Implícitos en el clamp |
+| Where the rich covenant runs | BCH node consensus, onchain, always | Emulator VM, offchain, while the operator cooperates |
+| Emergency path | None — the rich path is already the final layer | Leaf 3 + the pre-signed package, needed because Bitcoin L1 cannot validate introspection |
+| Settlement speed | Needs a BCH block confirmation | Instant, offchain (except Leaf 3) |
+| Base security | BCH hashrate | Inherits Bitcoin L1 |
+| Trust on the normal path | None — the node validates | Emulator/operator honesty (mitigated by Leaf 3 as a backstop) |
+| Liquidation thresholds | Precomputed from leverage | Implicit in the clamp |
 
 ---
 
-## Pendiente de definir
+## Open risk: a fixed-term contract can outlive its batch
 
-- [ ] **Emparejamiento**: ¿bilateral (las dos partes se conocen al crear) o order book en el
-      servicio? Decide si el servicio es un co-firmante sin estado o una pieza con estado
-- [ ] **Umbral de liquidación alto**: con `hedgeLeverage = 1x` y la formulación por conservación,
-      parece que sólo liga el umbral bajo (`hedgePayoutSats >= totalCollateral`). Confirmar que el
-      alto de AnyHedge sólo hace falta si el lado hedge va apalancado
-- [ ] **Ventana del CSV** en las hojas de emergencia (segundos, múltiplo de 512)
-- [ ] **Fee del servicio/protocolo** (AnyHedge la cobra incluida trustlessly en el contrato)
-- [ ] **Ratio mínimo de colateral** al fondear, para que el Long no abra posiciones ya liquidables
-- [ ] Alcance del servicio web: ¿sólo API, o también UI?
-- [ ] **Reparto desde el 2-de-3 tras una salida de emergencia**: ¿el servicio arbitra firmando
-      según la misma fórmula sobre el último precio del oráculo, o las partes acuerdan el reparto
-      entre ellas? El covenant ya no está para imponerlo
-- [ ] **Persistencia del paquete pre-firmado**: dónde vive, quién lo custodia, cómo se recupera si
-      una de las partes lo pierde
+VTXOs are not permanent. Every VTXO lives inside a batch output with an expiry window, and *"if a
+user's VTXO is still active when the batch expires and they have not renewed it, the operator can
+claim those funds"* — the user keeps a recovery route but **loses the ability to enforce the claim
+unilaterally onchain**. Renewal means participating in a batch swap before expiry.
+
+`maturityTime` can sit past the batch expiry. Renewing means spending and recreating the VTXO,
+which for a two-party contract VTXO is not the automatic background operation the wallet SDK runs
+for ordinary funds.
+
+Unresolved, and it gates production:
+
+- Whether `maturityTime` must be capped at the batch expiry window
+- Whether the service can drive renewal, and what signatures that needs from both parties
+- What happens to the pre-signed exit package after a renewal. It references the old VTXO, so it
+  has to be re-signed on every renewal, which puts a liveness requirement on both parties
+
+---
+
+## Still to define
+
+- [ ] **Matching**: bilateral (both parties know each other at creation) or an order book in the
+      service? Decides whether the service is a stateless co-signer or a stateful component
+- [ ] **High liquidation threshold**: with `hedgeLeverage = 1x` and the conservation formulation,
+      only the low threshold (`hedgePayoutSats >= totalCollateral`) appears to bind. Confirm
+      AnyHedge's high threshold is only needed when the hedge side is leveraged
+- [ ] **CSV window** on the exit leaf — must be seconds, a multiple of 512, and at or above
+      `getInfo().exitDelay`. The lower bound is protocol-imposed; the value above it is ours
+- [ ] **Service/protocol fee** (AnyHedge charges it trustlessly inside the contract)
+- [ ] **Minimum collateral ratio** at funding, so the long cannot open an already-liquidatable
+      position
+- [ ] Web service scope: API only, or a UI too?
+- [ ] **The split out of the 2-of-3 after an emergency exit**: does the service arbitrate by
+      signing the same formula on the latest oracle price, or do the parties agree between
+      themselves? The covenant is no longer there to impose it
+- [ ] **Persistence of the pre-signed package**: where it lives, who holds it, how it is recovered
+      if a party loses it
