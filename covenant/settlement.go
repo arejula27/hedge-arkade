@@ -7,119 +7,148 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 )
 
-// SatsPerBtc is the scale that converts a USD-cent price per BTC into sats.
-const SatsPerBtc = 100_000_000
+// Dust is the floor each payout is raised to. AnyHedge pays max(DUST, …) and
+// always emits exactly two outputs, rather than dropping a small one; a
+// fixed-shape transaction is easier to introspect and leaves no value stranded
+// as fee.
+//
+// 1332 is BCH's value. Bitcoin's relay rules differ and this needs setting for
+// the output types we actually pay to.
+const Dust = 1332
 
-// DustLimit is the payout below which no output is created. A payout of exactly
-// DustLimit is dropped: stability_vault.ark:294 tests `> 330`.
-const DustLimit = 330
-
-// Terms are the contract parameters baked into the script at funding time. They
-// are constants inside the covenant, which is what makes the taproot address
-// commit to them.
+// Terms are the contract parameters baked into the script at funding time,
+// mirroring AnyHedge v0.12's constructor.
 type Terms struct {
-	// HedgeValueCents is the USD value the hedge side locks in, in cents.
-	HedgeValueCents int64
-	// TotalCollateral is the sum of both contributions, in sats.
-	TotalCollateral int64
+	// NominalUnitsXSatsPerBtc is the nominal hedge value in units, scaled by
+	// 1e8. It is the numerator of the payout division.
+	NominalUnitsXSatsPerBtc int64
+
+	// SatsForNominalUnitsAtHighLiquidation is the leverage term, subtracted
+	// from the short's raw payout. Zero means a pure 1x hedge.
+	SatsForNominalUnitsAtHighLiquidation int64
+
+	// PayoutSats is the total the contract pays out, miner fee excluded.
+	PayoutSats int64
+
+	// LowLiquidationPrice and HighLiquidationPrice clamp the oracle price.
+	//
+	// The clamp is not a safety rail, it is load-bearing: because every price
+	// beyond a boundary settles identically, it does not matter which
+	// out-of-bounds oracle message a spender picks. That is half of why this
+	// contract needs no clock.
+	LowLiquidationPrice  int64
+	HighLiquidationPrice int64
 }
 
 func (t Terms) validate() error {
-	if t.HedgeValueCents < 0 {
-		return fmt.Errorf("hedge value is negative: %d cents", t.HedgeValueCents)
-	}
-	if t.TotalCollateral <= 0 {
-		return fmt.Errorf("total collateral must be positive, got %d sats", t.TotalCollateral)
+	switch {
+	case t.NominalUnitsXSatsPerBtc <= 0:
+		return fmt.Errorf("nominal units must be positive, got %d", t.NominalUnitsXSatsPerBtc)
+	case t.PayoutSats <= 0:
+		return fmt.Errorf("payout must be positive, got %d sats", t.PayoutSats)
+	case t.LowLiquidationPrice <= 0:
+		return fmt.Errorf("low liquidation price must be positive, got %d", t.LowLiquidationPrice)
+	case t.HighLiquidationPrice <= t.LowLiquidationPrice:
+		return fmt.Errorf("high liquidation price %d is not above the low one %d",
+			t.HighLiquidationPrice, t.LowLiquidationPrice)
+	case t.SatsForNominalUnitsAtHighLiquidation < 0:
+		return fmt.Errorf("leverage term is negative: %d", t.SatsForNominalUnitsAtHighLiquidation)
 	}
 	return nil
 }
 
-// SettlementScript emits the Arkade Script that settles the contract at an
-// oracle-signed price.
+// SettlementScript emits the Arkade Script for AnyHedge's payout path.
 //
-// Witness: the oracle price in USD cents per BTC, as the only stack item.
+// Witness: the oracle price, as the only stack item.
 //
-// The script computes the hedge payout, clamps it to the collateral, and checks
-// both outputs cover what each side is owed. It never computes the long's share
-// independently — that share is the remainder, so the two cannot disagree by a
-// truncated sat and leave the transaction unspendable.
+//	clampedPrice = max(min(price, high), low)
+//	shortSats    = max(DUST, nominalUnits/clampedPrice - satsAtHighLiquidation)
+//	longSats     = max(DUST, payoutSats - shortSats)
+//
+// Both output values are then checked exactly, not as a lower bound.
+//
+// Not yet built: oracle signature verification, the sequence-adjacency check
+// that pins which message may be used, and the output lock scripts. Values
+// without lock scripts means the amounts are right and the recipients are
+// whoever the spender likes — this script is not safe to deploy as it stands.
 func (t Terms) SettlementScript() ([]byte, error) {
 	if err := t.validate(); err != nil {
 		return nil, err
 	}
 
-	hedgeValue, err := bigNumBytes(t.HedgeValueCents)
+	nominal, err := bigNumBytes(t.NominalUnitsXSatsPerBtc)
 	if err != nil {
 		return nil, err
 	}
-	scale, err := bigNumBytes(SatsPerBtc)
+	leverage, err := bigNumBytes(t.SatsForNominalUnitsAtHighLiquidation)
 	if err != nil {
 		return nil, err
 	}
-	collateral, err := bigNumBytes(t.TotalCollateral)
+	payout, err := bigNumBytes(t.PayoutSats)
 	if err != nil {
 		return nil, err
 	}
-	dust, err := bigNumBytes(DustLimit)
+	low, err := bigNumBytes(t.LowLiquidationPrice)
+	if err != nil {
+		return nil, err
+	}
+	high, err := bigNumBytes(t.HighLiquidationPrice)
+	if err != nil {
+		return nil, err
+	}
+	dust, err := bigNumBytes(Dust)
 	if err != nil {
 		return nil, err
 	}
 
 	b := txscript.NewScriptBuilder()
 
-	// stack: price
+	// Exactly one input and two outputs. A second input would let a spender
+	// bring along value the covenant never accounted for.
+	b.AddOp(arkade.OP_INSPECTNUMINPUTS)
+	b.AddOp(arkade.OP_1)
+	b.AddOp(arkade.OP_NUMEQUALVERIFY)
+	b.AddOp(arkade.OP_INSPECTNUMOUTPUTS)
+	b.AddOp(arkade.OP_2)
+	b.AddOp(arkade.OP_NUMEQUALVERIFY)
+
+	// clampedPrice = max(min(price, high), low)
+	b.AddData(high)
+	b.AddOp(arkade.OP_MIN)
+	b.AddData(low)
+	b.AddOp(arkade.OP_MAX) // clampedPrice
+
+	// shortSats = max(DUST, nominal/clampedPrice - leverage)
 	//
-	// The multiplication runs on the VM rather than being folded into a
-	// constant here: hedgeValueCents * 1e8 overflows int64 for a large enough
-	// position, and BigNum is the only arithmetic in this system without a
-	// ceiling.
-	b.AddData(hedgeValue)                 // price hedgeValue
-	b.AddData(scale)                      // price hedgeValue 1e8
-	b.AddOp(arkade.OP_MUL)                // price numerator
-	b.AddOp(arkade.OP_SWAP)               // numerator price
-	b.AddOp(arkade.OP_DIV)                // raw
-	b.AddOp(arkade.OP_DUP)                // raw raw
-	b.AddData(collateral)                 // raw raw collateral
-	b.AddOp(arkade.OP_GREATERTHANOREQUAL) // raw (raw>=collateral)
-
-	// Upper clamp: once the raw payout reaches the collateral the long is wiped
-	// out and the hedge takes everything. There is no lower clamp to write —
-	// validate() rules out a negative hedge value, so the quotient cannot go
-	// below zero.
-	b.AddOp(arkade.OP_IF)
-	b.AddOp(arkade.OP_DROP)
-	b.AddData(collateral)
-	b.AddOp(arkade.OP_ENDIF) // hedgePayout
-
-	// Output 0 must cover the hedge payout. Overpaying is allowed: the covenant
-	// stops a side being short-changed, it does not stop a spender being
-	// generous with their own share.
-	b.AddOp(arkade.OP_DUP)                // hedgePayout hedgePayout
-	b.AddOp(arkade.OP_0)                  // hedgePayout hedgePayout 0
-	b.AddOp(arkade.OP_INSPECTOUTPUTVALUE) // hedgePayout hedgePayout out0
-	b.AddOp(arkade.OP_SWAP)               // hedgePayout out0 hedgePayout
-	b.AddOp(arkade.OP_GREATERTHANOREQUAL)
-	b.AddOp(arkade.OP_VERIFY) // hedgePayout
-
-	// The long gets the remainder, by subtraction rather than recomputation.
-	b.AddData(collateral)   // hedgePayout collateral
-	b.AddOp(arkade.OP_SWAP) // collateral hedgePayout
-	b.AddOp(arkade.OP_SUB)  // longPayout
-
-	// A dust-sized remainder gets no output at all, so the script must not go
-	// looking for output 1 — the transaction does not have one.
-	b.AddOp(arkade.OP_DUP)
+	// The division runs on the VM. Folding nominal/price into a build-time
+	// constant is impossible anyway, but note the multiplication that produces
+	// `nominal` must not be done in Go either: it overflows int64 for a large
+	// position, and BigNum is the only arithmetic here without a ceiling.
+	b.AddData(nominal)
+	b.AddOp(arkade.OP_SWAP)
+	b.AddOp(arkade.OP_DIV)
+	b.AddData(leverage)
+	b.AddOp(arkade.OP_SUB)
 	b.AddData(dust)
-	b.AddOp(arkade.OP_GREATERTHAN)
-	b.AddOp(arkade.OP_IF)
+	b.AddOp(arkade.OP_MAX) // shortSats
+
+	// longSats = max(DUST, payoutSats - shortSats)
+	b.AddOp(arkade.OP_DUP)
+	b.AddData(payout)
+	b.AddOp(arkade.OP_SWAP)
+	b.AddOp(arkade.OP_SUB)
+	b.AddData(dust)
+	b.AddOp(arkade.OP_MAX) // shortSats longSats
+
+	// Output 1 pays the long, exactly.
 	b.AddOp(arkade.OP_1)
-	b.AddOp(arkade.OP_INSPECTOUTPUTVALUE) // longPayout out1
-	b.AddOp(arkade.OP_SWAP)               // out1 longPayout
-	b.AddOp(arkade.OP_GREATERTHANOREQUAL)
-	b.AddOp(arkade.OP_ELSE)
-	b.AddOp(arkade.OP_DROP)
-	b.AddOp(arkade.OP_1)
-	b.AddOp(arkade.OP_ENDIF)
+	b.AddOp(arkade.OP_INSPECTOUTPUTVALUE)
+	b.AddOp(arkade.OP_NUMEQUALVERIFY) // shortSats
+
+	// Output 0 pays the short, exactly.
+	b.AddOp(arkade.OP_0)
+	b.AddOp(arkade.OP_INSPECTOUTPUTVALUE)
+	b.AddOp(arkade.OP_NUMEQUAL)
 
 	return b.Script()
 }

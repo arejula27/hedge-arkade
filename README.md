@@ -20,12 +20,13 @@ Original reference: `anyhedge.cash`
 | Decision | Value | Date |
 |---|---|---|
 | Product | **Fixed term** (AnyHedge), not perpetual | 2026-07-27 |
-| Contract base | `stability_vault.ark` from `arkade-os/compiler` | 2026-07-27 |
-| Oracle | **Run by us**, Fuji/stability format | 2026-07-27 |
+| Contract base | **AnyHedge v0.12**, ported as literally as Arkade allows | 2026-07-30 |
+| Oracle | **Run by us**, AnyHedge message layout (sequence + timestamp + price) | 2026-07-30 |
 | Emergency exit | One CSV 2-of-2 leaf, pre-signed at funding, sweeping to a 2-of-3 | 2026-07-30 |
-| Early mutual close | **At the oracle price**, not a free split. No leaf settles at anyone's discretion | 2026-07-30 |
+| Mutual redemption | **Free split**, as AnyHedge. Reverses the oracle-priced decision — see Leaf 2 | 2026-07-30 |
 | Structure | 3 leaves: 2 covenant (offchain) + 1 exit (L1). Only the exit touches Bitcoin | 2026-07-30 |
-| Maturity gate | **Blocked** — no trustworthy clock exists in the VM. See §Blocked | 2026-07-30 |
+| Maturity gate | **Sequence adjacency**, AnyHedge's mechanism. No clock involved | 2026-07-30 |
+| Oracle message | `(ticker, sequence, price, timestamp)` — the sequence is load-bearing | 2026-07-30 |
 | Language | **Go** for the service and the contract builder; TypeScript only for the client-side verifier | 2026-07-30 |
 | Contract distribution | The service builds the tree and sends it whole; the client recognises it or refuses | 2026-07-30 |
 | Funding rate | **Dropped** — it is what makes stability perpetual | 2026-07-27 |
@@ -34,43 +35,53 @@ Original reference: `anyhedge.cash`
 reimplemented in the service. `covenant/` builds that script and runs it against the real VM; it
 contains no formula of its own. See §`covenant/`.
 
-**Viability: confirmed opcode by opcode.** Everything the spec needs exists in the emulator VM and
-resolves from the TypeScript SDK. See §Verified viability.
+**Viability: confirmed opcode by opcode**, and the payout covenant now executes on the real VM.
+See §Verified viability and §`covenant/`.
 
 ---
 
-## Starting point: `stability_vault.ark`
+## Starting point: AnyHedge v0.12
 
-`../compiler/examples/stability/stability_vault.ark` (355 lines) is this same contract under
-different names. We adapt it rather than rewrite it.
+`@generalprotocols/anyhedge-contracts@0.12.1`, `contracts/v0.12/contract.cash` — 153 lines, in
+production since 2020. **The goal is to stay as close to it as Arkade allows.** Where this spec and
+that file disagree, the file is right unless the difference is forced by the platform.
 
-| This spec | stability_vault |
+`../compiler/examples/stability/stability_vault.ark` remains useful as a worked example of Arkade
+Script — the oracle verification, the arithmetic, the introspection — but its *design* is a
+perpetual with a funding rate, and we take the design from AnyHedge.
+
+| AnyHedge | This port |
 |---|---|
-| Hedge (short 1x, fixed USD value) | `seeker` — "holds a fixed USD value" |
-| Long (extra collateral, leveraged long) | `provider` — "leveraged BTC long" |
-| `hedgePayoutInBtc = hedgeValue / endPrice` | `seekerRaw = newTargetUSD * 100000000 / oraclePrice` |
-| `output_hedge + output_long == totalCollateral` | `providerPayout = totalCollateral - seekerRaw` |
-| `lowLiquidationPrice` | `if (seekerRaw >= totalCollateral)` → hedge takes everything |
-| `highLiquidationPrice` | `if (seekerRaw <= 0)` → counterparty takes everything |
+| `mutualRedeem`, two signatures | Leaf 2, plus the operator key Arkade requires |
+| `payout`, liquidation or maturity | Leaf 1, same logic, as an Arkade covenant |
+| — | Leaf 3, unilateral exit. Arkade requires it; BCH has no equivalent |
+| `checkDataSig` | `OP_CHECKSIGFROMSTACK` |
+| P2SH, one script | Taproot, three leaves |
+| 4-byte ints throughout | BigNum, arbitrary precision |
 
-AnyHedge's liquidation thresholds and stability's clamp are the same thing: the condition
-`seekerRaw >= totalCollateral` **is** the low liquidation price, computed instead of precomputed.
-That removes the need to derive thresholds from leverage separately.
+**Forced differences** — Arkade leaves no choice:
 
-**What to add on top of stability**: `maturityTime` (stability is perpetual), the early mutual
-close — which reuses the same covenant with a different trigger — and a two-party emergency exit,
-because stability exits with a single signature.
+- An exit path, so there is a third leaf and a pre-signed sweep
+- Collaborative leaves must carry the operator pubkey
+- The covenant runs on the emulator, not on node consensus
+- Payouts land in VTXOs, so `shortLockScript`/`longLockScript` are Arkade scripts, not BCH P2PKH
 
-**What to remove**: `fundingRatePerSec` and all the accrual around it (`lastUpdate`, `elapsed`,
-`delta`). A fixed-term contract pays no funding; the price of the hedge is paid outside the
-contract when the position is opened.
+**Chosen differences** — where ours is better and we keep it:
+
+- **BigNum instead of 4-byte ints.** AnyHedge is stuck with uint32 prices and timestamps, which is
+  why it needs a published numerical error analysis and why its timestamps die in 2106. Arkade's
+  BigNum has no ceiling, so the analysis is unnecessary rather than merely passed
+
+Everything else follows AnyHedge, including the parts an earlier draft of this spec had changed:
+both liquidation boundaries, the clamp, the leverage term, dust as a floor rather than an omitted
+output, exact output values and lock scripts, and a free mutual redemption.
 
 ---
 
 ## Actors
 
-- **Hedge**: wants to preserve the value of their BTC in terms of an external asset (USD, gold…).
-  Equivalent to a 1x short.
+- **Short** (AnyHedge's name; the hedge side): wants to preserve the value of their BTC in terms of
+  an external asset. A 1x short unless `satsForNominalUnitsAtHighLiquidation` says otherwise.
 - **Long**: the speculating counterparty, betting the opposite direction. Posts the extra
   collateral that backs the hedge payout.
 - **Oracle**: signs price messages periodically. Run by us. Knows nothing about any particular
@@ -85,8 +96,38 @@ contract when the position is opened.
 
 ## Contract parameters (fixed at creation)
 
-| Parameter | Type | Description |
-|---|---|---|
+Mirroring `AnyHedge_v0_12` parameter for parameter, with BCH-specific names carried over so the two
+can be diffed. AnyHedge calls the hedge side **short**; we use the same word here.
+
+| Parameter | Description |
+|---|---|
+| `shortMutualRedeemPublicKey` | Short side key, for mutual redemption |
+| `longMutualRedeemPublicKey` | Long side key, for mutual redemption |
+| `enableMutualRedemption` | Flag; mutual redemption can be switched off at creation |
+| `shortLockScript` | Where the short is paid. Any valid output script |
+| `longLockScript` | Where the long is paid |
+| `oraclePublicKey` | Price oracle public key |
+| `nominalUnitsXSatsPerBch` | Nominal hedge value in units, scaled by 1e8 |
+| `satsForNominalUnitsAtHighLiquidation` | Leverage term. `0` means a pure 1x hedge |
+| `payoutSats` | Total payout, miner fee excluded |
+| `lowLiquidationPrice` | Lower clamp boundary |
+| `highLiquidationPrice` | Upper clamp boundary |
+| `startTimestamp` | Earliest timestamp a liquidation may be redeemed at |
+| `maturityTimestamp` | Required timestamp for maturity redemption |
+
+Arkade adds to this list: `servicePk` for the 2-of-3 exit destination, the operator pubkey on the
+collaborative leaves, and the CSV delay on the exit leaf.
+
+**Both liquidation boundaries come back.** An earlier draft dropped `highLiquidationPrice` on the
+grounds that a 1x hedge only binds below. That was wrong, and for a reason that matters: the clamp
+is what makes every out-of-bounds message pay identically, which is half of why AnyHedge needs no
+clock. Without the upper boundary there is no upper clamp and the long's win is unbounded.
+
+`satsForNominalUnitsAtHighLiquidation` is the leverage term. At `0` the short is a pure 1x hedge,
+which is the product we described; keeping the parameter costs nothing and leaves leveraged shorts
+available later.
+
+---|---|---|
 | `hedgePk` | pubkey | Hedge side key |
 | `longPk` | pubkey | Long side key |
 | `servicePk` | pubkey | Service key — used only in the 2-of-3 exit destination |
@@ -105,80 +146,90 @@ much each side puts in at funding.
 
 ## Formulas
 
-With no funding rate, `hedgeValueCents` is constant and the settlement math collapses to:
+Taken from `contract.cash` unchanged:
 
 ```
-hedgePayoutSats = clamp(hedgeValueCents * 1e8 / oraclePrice, 0, totalCollateral)
-longPayoutSats  = totalCollateral - hedgePayoutSats
+clampedPrice = max(min(oraclePrice, highLiquidationPrice), lowLiquidationPrice)
+shortSats    = max(DUST, (nominalUnitsXSatsPerBch / clampedPrice) - satsForNominalUnitsAtHighLiquidation)
+longSats     = max(DUST, payoutSats - shortSats)
 ```
 
-Units: `hedgeValueCents` [cents] × `1e8` [sats/BTC] ÷ `oraclePrice` [cents/BTC] = [sats].
-`OP_DIV` truncates, and truncation always costs the hedge side the fraction and hands it to the
-long.
+Division truncates, and truncation costs the short side the fraction.
 
-**Conservation invariant** — the reason the introspection stays simple. The total locked never
-changes, it only gets redistributed:
+**Dust is a floor, not an omission.** AnyHedge pays `max(DUST, …)` and always produces exactly two
+outputs. This differs from `stability_vault.ark`, which drops an output below 330 sats — we follow
+AnyHedge. `DUST` is 1332 on BCH; the Bitcoin value has to be set for our own relay rules.
+
+**Outputs are exact.** Not `>=`:
 
 ```
-output_hedge.value + output_long.value == totalCollateral
+require(tx.inputs.length == 1);
+require(tx.outputs.length == 2);
+require(tx.outputs[0].value == shortSats);
+require(tx.outputs[0].lockingBytecode == shortLockScript);
+require(tx.outputs[1].value == longSats);
+require(tx.outputs[1].lockingBytecode == longLockScript);
 ```
 
-So the covenant only has to check:
-1. `output_hedge.value >= hedgePayoutSats` (computed from the oracle-signed price)
-2. `output_long.value >= totalCollateral - hedgePayoutSats` (the remainder, never recomputed)
-
-With a dust guard: a payout at or below 330 sats gets no output at all (same pattern as
-`stability_vault.ark:294`, which tests `> 330`).
+Checking values without checking the lock scripts is a hole: the amounts would be right and the
+recipients arbitrary.
 
 ---
 
 ## Oracle message format
 
-We adopt the Fuji/stability format unchanged (`stability_vault.ark:22-28`), because we run the
-oracle ourselves and this encoding is already proven through the compiler:
-
 ```
-msg = sha256(ticker || price || timestamp)
+msg = sha256(ticker || sequence || price || timestamp)
 sig = sign(oraclePk, msg)
 ```
 
-- `price` and `timestamp`: **8-byte little-endian unsigned** integers
+- `sequence`, `price` and `timestamp`: **8-byte little-endian unsigned** integers
+- `sequence` increments by one on every publication, with no gaps. This is the field the whole
+  settlement rests on — see §Settlement timing below
 - `price` in USD cents per BTC
 - `ticker` lets us add feeds without touching the contract
-
-Freshness checks inside the covenant:
-
-```
-oracleAge = <now> - oracleTime
-require(oracleAge >= 0,   "future-dated oracle")   // reject future-dated prices
-require(oracleAge <= 600, "stale oracle")          // 10-minute window
-```
 
 Verified with `checkSigFromStack(oracleSig, oraclePk, oracleMsg)` — `OP_CHECKSIGFROMSTACK`
 (`0xcc`), 64-byte compact signature, 32-byte x-only Schnorr pubkey.
 
-### Blocked: there is no trustworthy clock
+The oracle is a **stateless signer**. It publishes signed prices on a fixed cadence, knows nothing
+about any contract, and never touches a transaction. Whoever settles puts the message in the
+witness. One oracle serves every contract, and it can be entirely disconnected from Arkade.
 
-`tx.offchainTime` **does not exist**. It appears in `stability_vault.ark` and in the compiler's own
-guidance, described as the TEE introspector's wallclock, but neither side implements it:
+### Settlement timing — how AnyHedge does it without a clock
 
-- The compiler @ `3988a9d` maps only `version`, `locktime`, `numInputs`, `numOutputs`, `weight` and
-  `id` (`src/compiler/introspection.rs:5`). Anything else falls through to a placeholder branch
-  that emits the literal string `<tx.offchainTime>`, which is not an opcode
-- The VM's only clock is `OP_INSPECTLOCKTIME`, which reads the transaction's `nLockTime`
+There is no trustworthy clock. `tx.offchainTime` does not exist: the compiler @ `3988a9d` maps only
+`version`, `locktime`, `numInputs`, `numOutputs`, `weight` and `id`
+(`src/compiler/introspection.rs:5`), and the VM's only clock is `OP_INSPECTLOCKTIME`, which reads a
+`nLockTime` the spender chose. A freshness window is therefore unenforceable — and Bitcoin cannot
+express "this expires after T" at all. CLTV and consensus are both lower bounds on time.
 
-That leaves `nLockTime`, **chosen by whoever spends**. Two consequences:
+AnyHedge does not need one. Verified against `@generalprotocols/anyhedge-contracts@0.12.1`,
+`contracts/v0.12/contract.cash`. Two mechanisms replace it.
 
-**The freshness window does not hold.** `oracleAge = tx.locktime - oracleTime` is forgeable: take
-an old favourable price, set `nLockTime = oracleTime + 300`, and it passes. Consensus places no
-lower bound on `nLockTime`, so a past value is always legal.
+**Sequence adjacency.** The spender must supply the settlement message *and its immediate
+predecessor*:
 
-**The maturity gate is one-sided.** On L1 a transaction cannot confirm before its `nLockTime`, so
-settling early is blocked there. Offchain that binding is whatever the operator enforces, which is
-not in the covenant.
+```
+require(settlementSequence - 1 == previousSequence);   // adjacent, no gaps
+require(previousTimestamp < maturityTimestamp);        // predecessor is pre-maturity
+```
 
-Both freshness and maturity depend on this, so it blocks the contract. Open question for the Arkade
-team: what is today's trustworthy time source for an oracle freshness window.
+If the predecessor is before maturity and the settlement message is the very next one, then the
+settlement message is **the first message published on or after maturity**. Exactly one message
+qualifies. The spender has no choice to make, so there is nothing to shop for.
+
+**The clamp.** For liquidation the spender may use any message that crossed the boundary, but the
+price is clamped to that boundary, so every crossing message pays exactly the same. Choosing among
+them is meaningless.
+
+Together these turn two questions that need a clock — *"what is the price now?"* — into two that do
+not: *"did the price ever cross this line?"* and *"what was the first price after maturity?"* Both
+have a unique answer regardless of when they are asked.
+
+This is why a stale signed price is not an attack here. In a contract with a liquidation boundary,
+touching the boundary **is** the event: it liquidates permanently, like a stop-out. The old message
+is evidence of something that really happened.
 
 ---
 
@@ -209,8 +260,10 @@ Internal key = **NUMS** (Nothing Up My Sleeve) — no key-path spend, forcing on
 - `checkSigFromStack` validates the oracle-signed price message
 - `MUL`/`DIV` compute `hedgePayoutSats`
 - `INSPECTOUTPUTVALUE` enforces conservation
-- Trigger: `<now> >= maturityTime` **or** `hedgePayoutSats >= totalCollateral` (early
-  liquidation — the long ran out of collateral). The `<now>` half is blocked; see §Blocked
+- Witness carries two consecutive oracle messages; `settlementSeq == prevSeq + 1` and
+  `prevTimestamp < maturityTime` pin the settlement message (see §Settlement timing)
+- Trigger: `settlementTimestamp >= maturityTime` **or** `hedgePayoutSats >= totalCollateral`
+  (early liquidation — the long ran out of collateral)
 
 **What settling actually does.** It spends the contract VTXO and creates two new VTXOs, one owned
 by the hedge and one owned by the long, sized by the formula. The sats do move to each side; they
@@ -222,25 +275,36 @@ force that step and does not need it.
 
 **Why the maturity gate is not a CLTV.** A tapscript CLTV applies to the whole leaf
 unconditionally, so a leaf gated on `CLTV(maturityTime)` could not also fire early on liquidation.
-The `matured || liquidated` disjunction lives in the covenant instead, and the tapscript segment
-carries no timelock. Which clock the covenant reads is unresolved.
+The `matured || liquidated` disjunction lives in the covenant instead, reading the oracle message's
+own timestamp, and the tapscript segment carries no timelock.
 
 Both triggers share one leaf because they differ only in a condition, not in the key set.
 
-### Leaf 2 — Early mutual close, at the oracle price
-- Keys: hedge + long + emulator (tweaked) + operator
-- **Same covenant and same formula as Leaf 1.** The only difference is the trigger: instead of
-  `matured || liquidated`, both parties sign
-- Offchain, as an Arkade transaction
+### Leaf 2 — Mutual redemption
 
-The split is **not negotiated**: it comes from `hedgePayoutSats` on the latest signed price, same
-as at settlement. No leaf in this contract settles at anyone's discretion — either the oracle
-arbitrates or the output cannot be spent. A mutual close with a free split would be the contract's
-only covenant-free path, and it buys nothing Leaf 3 does not already provide.
+AnyHedge's version, adopted:
 
-Accepted cost: if the oracle goes down there is **no fast cooperative way out**, because both
-covenant leaves need it. A dead oracle is then handled exactly like a dead emulator — you leave
-through Leaf 3. One failure mode with one escape hatch, instead of two paths to maintain.
+```
+require(bool(enableMutualRedemption));
+require(checkSig(shortMutualRedeemSignature, shortMutualRedeemPublicKey));
+require(checkSig(longMutualRedeemSignature, longMutualRedeemPublicKey));
+```
+
+Two signatures, no oracle, no output constraints. Plus the operator pubkey Arkade requires on a
+collaborative path. Spends offchain, instantly.
+
+> **This reverses the 2026-07-30 decision** to settle the early close at the oracle price. That
+> decision rested on "a free split buys nothing Leaf 3 does not already provide", which was wrong:
+> Leaf 3 costs a full CSV wait and lands in a 2-of-3 where the split is *still* unresolved. A free
+> mutual redemption is instant and final.
+
+It is also strictly more capable, and the cost is nothing. Both parties must sign, so no one can
+take a discretionary split alone — and when both owners of the money agree, "no path settles at
+discretion" is a principle with nobody left to protect. AnyHedge's own comment names the use the
+oracle-priced version cannot serve: *"useful for example in the case of a funding error"* — an
+unwinding at a price no oracle message supports.
+
+`enableMutualRedemption` comes across too: a contract can be created without this path at all.
 
 ### Why leaves 1 and 2 carry the operator key and leaf 3 does not
 
@@ -321,7 +385,7 @@ Checked against `arkade-os/emulator` (`pkg/arkade`), `@arkade-os/sdk` 0.4.51 and
 | Rebuilding the message | `CAT`, `SUBSTR`, `NUM2BIN`, `BIN2NUM` | Mixed |
 | Value conservation | `INSPECTOUTPUTVALUE` (0xcf) | `ARKADE_OP` |
 | Thresholds | `GREATERTHANOREQUAL`, `LESSTHAN` | Bitcoin base |
-| Maturity | **unresolved** — see §Blocked | — |
+| Maturity | The oracle message's timestamp, pinned by sequence adjacency | Witness, not introspection |
 
 All resolve through `ARKADE_OPS = { ...OP, ...ARKADE_OP }` in the SDK.
 
@@ -356,22 +420,21 @@ would predict.
 
 | File | What it covers |
 |---|---|
-| `settlement.go` | `Terms` and `SettlementScript()` — builds the script with `txscript.NewScriptBuilder` and the opcodes `pkg/arkade` exports |
+| `settlement.go` | `Terms` and `SettlementScript()` — AnyHedge's payout path, built with `txscript.NewScriptBuilder` and the opcodes `pkg/arkade` exports |
 | `vm.go` | The harness: an `ArkPrevOutFetcher`, a synthetic spending transaction, and `Run` to execute a script on `arkade.NewEngine` |
 
-All arithmetic runs on the VM, including `hedgeValueCents * 1e8` — folding that into a build-time
-constant overflows int64 for a large enough position, and BigNum is the only arithmetic here
-without a ceiling.
+All arithmetic runs on the VM. Expected payouts are written out in the test table, never computed.
 
-Expected payouts are written out in the test table, never computed. If the table and the VM
-disagree, the VM is what settles real money.
+Pinned by 20 passing cases: the clamp on both boundaries and far past them, the dust floor, the
+leverage term, truncation direction, a nominal of 9e18, exact-value checks in both directions
+(under *and* over), swapped payouts, and the input/output count.
 
-Currently pinned: the split at four prices, the clamp exactly on the liquidation boundary,
-truncation direction, the int64 overflow, six ways of underpaying a side, and script determinism.
+**Not safe to deploy yet.** Missing, in the order it matters:
 
-> **What the VM taught us**: just above the liquidation price the long is owed 4 sats, which is
-> dust, so no second output is created and everything legitimately goes to the hedge. Liquidation
-> has a dust *band*, not a single point.
+1. **Output lock scripts.** The script checks output *values* and not who they pay. Right now the
+   amounts are correct and the recipients are whoever the spender chooses
+2. **Oracle signature verification** — `CHECKSIGFROMSTACK` over the reassembled message
+3. **Sequence adjacency** — the two-message check that pins which oracle message may be used
 
 ### Verification
 

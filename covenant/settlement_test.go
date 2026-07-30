@@ -6,11 +6,14 @@ import (
 	"github.com/arkade-os/emulator/pkg/arkade"
 )
 
-// A $10,000 hedge against 0.2 BTC of collateral. At $100,000/BTC the hedge side
-// is owed exactly 0.1 BTC, so the collateral splits down the middle.
+// A $10,000 hedge against 0.2 BTC, liquidating at $50,000 and $200,000.
+// Prices are USD cents per BTC, so the nominal is 1,000,000 cents scaled by 1e8.
 var standard = Terms{
-	HedgeValueCents: 1_000_000,  // $10,000
-	TotalCollateral: 20_000_000, // 0.2 BTC
+	NominalUnitsXSatsPerBtc:              100_000_000_000_000, // 1e6 cents × 1e8
+	SatsForNominalUnitsAtHighLiquidation: 0,                   // pure 1x hedge
+	PayoutSats:                           20_000_000,          // 0.2 BTC
+	LowLiquidationPrice:                  5_000_000,           // $50,000
+	HighLiquidationPrice:                 20_000_000,          // $200,000
 }
 
 // price encodes an oracle price as the script's witness.
@@ -23,8 +26,8 @@ func price(t *testing.T, cents int64) [][]byte {
 	return [][]byte{b}
 }
 
-// Expected payouts are written out in the table, not computed. If the VM and
-// this table disagree, the VM is what settles real money.
+// Expected payouts are written out, never computed. If the table and the VM
+// disagree, the VM is what settles real money.
 func TestSettlementAccepts(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -39,64 +42,75 @@ func TestSettlementAccepts(t *testing.T) {
 			out:   Outputs{Hedge: 10_000_000, Long: 10_000_000},
 		},
 		{
-			name:  "price doubles, the hedge needs half the sats and the long profits",
+			name:  "price doubles, the short needs half the sats and the long profits",
 			terms: standard,
-			price: 20_000_000, // $200,000
+			price: 20_000_000, // $200,000, exactly the high boundary
 			out:   Outputs{Hedge: 5_000_000, Long: 15_000_000},
 		},
 		{
-			name:  "price up 10x, the hedge holds its dollar value and nothing more",
+			// The clamp is why no clock is needed: every price past a boundary
+			// settles identically, so it does not matter which out-of-bounds
+			// oracle message a spender picks.
+			name:  "far above the high boundary settles the same as at it",
 			terms: standard,
-			price: 100_000_000, // $1,000,000
-			out:   Outputs{Hedge: 1_000_000, Long: 19_000_000},
+			price: 500_000_000, // $5,000,000
+			out:   Outputs{Hedge: 5_000_000, Long: 15_000_000},
 		},
 		{
-			// The long's collateral is exactly consumed. The clamp has to fire on
-			// the boundary, not one sat past it.
-			name:  "price halves, the long is exactly wiped out",
+			// The long is wiped out, but still gets a dust output rather than
+			// none. AnyHedge always emits exactly two outputs.
+			name:  "at the low boundary the long is left with dust",
 			terms: standard,
 			price: 5_000_000, // $50,000
-			out:   Outputs{Hedge: 20_000_000, Long: 0},
+			out:   Outputs{Hedge: 20_000_000, Long: Dust},
 		},
 		{
-			name:  "below liquidation, the hedge still gets no more than the collateral",
+			name:  "far below the low boundary settles the same as at it",
 			terms: standard,
-			price: 1_000_000, // $10,000
-			out:   Outputs{Hedge: 20_000_000, Long: 0},
+			price: 1, // absurd, and clamped away
+			out:   Outputs{Hedge: 20_000_000, Long: Dust},
 		},
 		{
-			// 100_000_000 / 3 = 33_333_333.33…  OP_DIV truncates, so the third of
-			// a sat stays with the long. Rounding up would pay the hedge out of
-			// collateral it is not owed.
-			name:  "truncation goes against the hedge side",
-			terms: Terms{HedgeValueCents: 1, TotalCollateral: 100_000_000},
+			// 100_000_000 / 3 = 33_333_333.33…  OP_DIV truncates, and the third
+			// of a sat stays with the long. Rounding up would pay the short out
+			// of collateral it is not owed.
+			name: "truncation goes against the short side",
+			terms: Terms{
+				NominalUnitsXSatsPerBtc: 100_000_000,
+				PayoutSats:              100_000_000,
+				LowLiquidationPrice:     1,
+				HighLiquidationPrice:    1_000_000,
+			},
 			price: 3,
 			out:   Outputs{Hedge: 33_333_333, Long: 66_666_667},
 		},
 		{
-			// hedgeValueCents * 1e8 is 1e19 here, past the int64 ceiling. On BCH
-			// this is the arithmetic that needed a published error analysis; the
-			// VM's BigNum has no such ceiling.
-			name:  "intermediate product overflows int64",
-			terms: Terms{HedgeValueCents: 100_000_000_000, TotalCollateral: 2_000_000_000_000},
-			price: 10_000_000,
-			out:   Outputs{Hedge: 1_000_000_000_000, Long: 1_000_000_000_000},
+			// 9e18 is eleven orders of magnitude past the uint32 ceiling BCH
+			// works in — the constraint behind AnyHedge's published numerical
+			// error analysis. BigNum carries it without comment.
+			name: "a nominal far past what BCH's 4-byte ints could hold",
+			terms: Terms{
+				NominalUnitsXSatsPerBtc: 9_000_000_000_000_000_000, // 9e18
+				PayoutSats:              2_000_000,
+				LowLiquidationPrice:     1_000_000_000_000,
+				HighLiquidationPrice:    10_000_000_000_000,
+			},
+			price: 9_000_000_000_000,
+			out:   Outputs{Hedge: 1_000_000, Long: 1_000_000},
 		},
 		{
-			name:  "overpaying a side is allowed",
-			terms: standard,
+			// With the leverage term set, the short is no longer a pure hedge:
+			// it gives up a fixed slice of its payout in exchange for leverage.
+			name: "the leverage term shifts sats to the long",
+			terms: Terms{
+				NominalUnitsXSatsPerBtc:              100_000_000_000_000,
+				SatsForNominalUnitsAtHighLiquidation: 5_000_000,
+				PayoutSats:                           20_000_000,
+				LowLiquidationPrice:                  5_000_000,
+				HighLiquidationPrice:                 20_000_000,
+			},
 			price: 10_000_000,
-			out:   Outputs{Hedge: 12_000_000, Long: 10_000_000},
-		},
-		{
-			// Just above liquidation the long is owed 4 sats, which is dust, so
-			// no second output is created and everything goes to the hedge. The
-			// dust band is a range of prices where liquidation is effectively
-			// already complete, not a single point.
-			name:  "just above liquidation the long's share is dust",
-			terms: standard,
-			price: 5_000_001,
-			out:   Outputs{Hedge: 20_000_000, Long: 0},
+			out:   Outputs{Hedge: 5_000_000, Long: 15_000_000},
 		},
 	}
 
@@ -116,45 +130,43 @@ func TestSettlementAccepts(t *testing.T) {
 func TestSettlementRejects(t *testing.T) {
 	tests := []struct {
 		name  string
-		terms Terms
 		price int64
 		out   Outputs
 	}{
 		{
-			name:  "hedge short by one sat",
-			terms: standard,
+			name:  "short over by one sat",
+			price: 10_000_000,
+			out:   Outputs{Hedge: 10_000_001, Long: 9_999_999},
+		},
+		{
+			name:  "short short by one sat",
 			price: 10_000_000,
 			out:   Outputs{Hedge: 9_999_999, Long: 10_000_001},
 		},
 		{
-			name:  "long short by one sat",
-			terms: standard,
+			// AnyHedge checks values exactly, not as a lower bound. Overpaying a
+			// side is a different settlement, not a generous one.
+			name:  "overpaying the short",
 			price: 10_000_000,
-			out:   Outputs{Hedge: 10_000_000, Long: 9_999_999},
+			out:   Outputs{Hedge: 12_000_000, Long: 10_000_000},
 		},
 		{
-			name:  "hedge takes everything at a price that does not justify it",
-			terms: standard,
-			price: 10_000_000,
-			out:   Outputs{Hedge: 20_000_000, Long: 0},
+			name:  "the two payouts swapped",
+			price: 20_000_000,
+			out:   Outputs{Hedge: 15_000_000, Long: 5_000_000},
 		},
 		{
-			name:  "long takes everything",
-			terms: standard,
+			name:  "short sweeps the whole payout at a price that does not justify it",
 			price: 10_000_000,
-			out:   Outputs{Hedge: 0, Long: 20_000_000},
+			out:   Outputs{Hedge: 20_000_000, Long: Dust},
 		},
 		{
-			// Above the liquidation price the long is still owed a non-dust
-			// share, so a full sweep to the hedge must fail.
-			name:  "sweep to the hedge above liquidation",
-			terms: standard,
-			price: 5_100_000,
-			out:   Outputs{Hedge: 20_000_000, Long: 0},
+			name:  "long sweeps the whole payout",
+			price: 10_000_000,
+			out:   Outputs{Hedge: Dust, Long: 20_000_000},
 		},
 		{
 			name:  "both sides paid nothing",
-			terms: standard,
 			price: 10_000_000,
 			out:   Outputs{Hedge: 0, Long: 0},
 		},
@@ -162,7 +174,7 @@ func TestSettlementRejects(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			script, err := tc.terms.SettlementScript()
+			script, err := standard.SettlementScript()
 			if err != nil {
 				t.Fatalf("SettlementScript() error = %v", err)
 			}
@@ -173,14 +185,33 @@ func TestSettlementRejects(t *testing.T) {
 	}
 }
 
+// A spender must not be able to bring extra inputs or outputs along.
+func TestSettlementRejectsWrongShape(t *testing.T) {
+	script, err := standard.SettlementScript()
+	if err != nil {
+		t.Fatalf("SettlementScript() error = %v", err)
+	}
+
+	for _, n := range []int{1, 3} {
+		if err := RunWithOutputCount(script, price(t, 10_000_000), n); err == nil {
+			t.Errorf("VM accepted a transaction with %d outputs, want exactly 2", n)
+		}
+	}
+}
+
 func TestSettlementScriptRejectsBadTerms(t *testing.T) {
 	tests := []struct {
 		name  string
 		terms Terms
 	}{
-		{"zero collateral", Terms{HedgeValueCents: 1_000_000}},
-		{"negative collateral", Terms{HedgeValueCents: 1_000_000, TotalCollateral: -1}},
-		{"negative hedge value", Terms{HedgeValueCents: -1, TotalCollateral: 20_000_000}},
+		{"zero nominal", Terms{PayoutSats: 1, LowLiquidationPrice: 1, HighLiquidationPrice: 2}},
+		{"zero payout", Terms{NominalUnitsXSatsPerBtc: 1, LowLiquidationPrice: 1, HighLiquidationPrice: 2}},
+		{"zero low boundary", Terms{NominalUnitsXSatsPerBtc: 1, PayoutSats: 1, HighLiquidationPrice: 2}},
+		{"boundaries inverted", Terms{NominalUnitsXSatsPerBtc: 1, PayoutSats: 1, LowLiquidationPrice: 9, HighLiquidationPrice: 2}},
+		{"negative leverage term", Terms{
+			NominalUnitsXSatsPerBtc: 1, PayoutSats: 1, LowLiquidationPrice: 1, HighLiquidationPrice: 2,
+			SatsForNominalUnitsAtHighLiquidation: -1,
+		}},
 	}
 
 	for _, tc := range tests {
@@ -193,8 +224,8 @@ func TestSettlementScriptRejectsBadTerms(t *testing.T) {
 }
 
 // The parameters are baked into the script, so identical terms must produce
-// identical bytes. This is what lets a client rebuild the script from the
-// parameters it was shown and compare, rather than decompile.
+// identical bytes. This is what lets a client recognise a contract by rebuilding
+// it, rather than decompiling it.
 func TestSettlementScriptIsDeterministic(t *testing.T) {
 	first, err := standard.SettlementScript()
 	if err != nil {
@@ -205,15 +236,16 @@ func TestSettlementScriptIsDeterministic(t *testing.T) {
 		t.Fatalf("SettlementScript() error = %v", err)
 	}
 	if string(first) != string(second) {
-		t.Error("the same terms produced two different scripts")
+		t.Fatal("the same terms produced two different scripts")
 	}
 
-	other := Terms{HedgeValueCents: 1_000_001, TotalCollateral: 20_000_000}
-	changed, err := other.SettlementScript()
+	nudged := standard
+	nudged.NominalUnitsXSatsPerBtc++
+	changed, err := nudged.SettlementScript()
 	if err != nil {
 		t.Fatalf("SettlementScript() error = %v", err)
 	}
 	if string(changed) == string(first) {
-		t.Error("changing the hedge value did not change the script")
+		t.Error("changing the nominal did not change the script")
 	}
 }

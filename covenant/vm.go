@@ -42,6 +42,27 @@ func Run(script []byte, stack [][]byte, out Outputs) error {
 	return vm.Execute()
 }
 
+// RunWithOutputCount executes a script against a transaction with n outputs
+// instead of the usual two, for checking that the covenant pins the shape.
+func RunWithOutputCount(script []byte, stack [][]byte, n int) error {
+	tx := &wire.MsgTx{
+		Version: 2,
+		TxIn:    []*wire.TxIn{{PreviousOutPoint: fundingOutpoint}},
+	}
+	for range n {
+		tx.TxOut = append(tx.TxOut, &wire.TxOut{Value: 1, PkScript: placeholderScript})
+	}
+
+	vm, err := arkade.NewEngine(script, tx, 0, nil, nil, inputAmount, newPrevOutFetcher())
+	if err != nil {
+		return err
+	}
+	if len(stack) > 0 {
+		vm.SetStack(stack)
+	}
+	return vm.Execute()
+}
+
 // inputAmount is the value of the VTXO being spent. It is deliberately larger
 // than any payout the tests exercise, so a failure is never an accident of the
 // input being too small to fund the outputs.
