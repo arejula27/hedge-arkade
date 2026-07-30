@@ -1,5 +1,14 @@
 node_modules/
 dist/
+
+# nix
+result
+result-*
+.direnv/
+
+# go
+*.test
+coverage.out
 *.tsbuildinfo
 .env
 .DS_Store

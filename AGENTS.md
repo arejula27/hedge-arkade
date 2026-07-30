@@ -18,6 +18,9 @@ Full protocol spec in `README.md`. Read it first.
 
 ## Stack
 
+- **Environment**: `nix develop` (flake at the repo root). Pins Go 1.26.5 — the exact version
+  `../emulator/pkg/arkade` requires — and Node 22. Nothing is installed globally on this machine,
+  so every `go`/`node` invocation goes through `nix develop --command`
 - **Language**: TypeScript (Node.js 22)
 - **Contract**: SDK `Program` object. `arkadec`/`.ark` is spec-only, off the build path
 - **Client SDK**: `@arkade-os/sdk` (0.4.51+)
@@ -63,13 +66,17 @@ all need real execution.
 - **Oracle message format is fixed**: `sha256(ticker || price || timestamp)`, price and timestamp
   as 8-byte LE unsigned, price in USD cents per BTC. Freshness `0 <= age <= 600s`. Reject
   future-dated prices explicitly
-- **Exit leaves drop the covenant**, so they must never be single-sig here — two parties have
-  money in this contract. Three 2-of-2 CSV leaves, never one 2-of-3 leaf (see below)
+- **Exit leaves drop the covenant.** One CSV 2-of-2 leaf (hedge + long); the exit transaction is
+  **pre-signed at funding** and sweeps to a 2-of-3 `{hedge, long, service}`. Pre-signing is what
+  makes it unilateral — either party broadcasts it alone once the CSV matures, and neither can
+  redirect the destination. Full write-up in `unilateral-exit.md`
+- **The 2-of-3 lives in the sweep destination, not in a leaf.** Inside a VTXO every closure is
+  N-of-N; outside it, the destination is any Bitcoin output script and a real threshold is fine
 - **No m-of-n in a `tapscript` leaf.** arkd's `MultisigClosure` is always N-of-N; its decoder
   requires the pushed integer to equal the key count, then re-encodes and demands byte equality
-  (`closure.go`). The compiler enforces this in `validate_closure_shape`
-  (`../compiler/src/compiler/tapscript.rs:147`, test at :704). m-of-n exists only *inside* a
-  covenant, which an exit path does not have. Full write-up in `unilateral-exit.md`
+  (`closure.go`). `DecodeClosure` (`closure.go:31`) is a closed whitelist of 5 shapes — arkd
+  classifies leaves, it does not merely verify them. `OP_CHECKMULTISIG` is separately disabled in
+  tapscript by BIP342. m-of-n exists only *inside* a covenant, which an exit path does not have
 - **Ark requires seconds-based timelocks.** CLTV values must be Unix timestamps (>= 500,000,000);
   CSV values must be multiples of 512 seconds. Block-based timelocks are rejected
 - **`cltv` and `csv` are mutually exclusive** in a single leaf
@@ -118,9 +125,12 @@ The covenant is enforced by the emulator co-signing, **not** by Bitcoin consensu
 
 ## Current status
 
-Spec only. No code has been written. Viability is confirmed at the opcode level (every operation
-the contract needs exists and resolves from the TypeScript SDK), but **nothing has been executed**
-— not against the VM, not against a live stack.
+`covenant/` holds the reference settlement math in Go (`Settle`, `LiquidationPrice`, oracle digest
+and freshness) with unit tests — dependency free, and the thing the VM will be checked against.
+
+Everything else is spec. Viability is confirmed at the opcode level (every operation the contract
+needs exists and resolves from the TypeScript SDK), but **no covenant has been executed** — not
+against the VM, not against a live stack. The `Program` object does not exist yet.
 
 Note for integration work: in `../bond-protocol` the regtest stack could never be started because
 Docker Desktop's WSL integration is disabled on this machine. Resolve that before planning

@@ -19,7 +19,7 @@ Referencia original: `anyhedge.cash`
 | Producto | **Plazo fijo** (AnyHedge), no perpetuo | 2026-07-27 |
 | Base del contrato | `stability_vault.ark` del repo `arkade-os/compiler` | 2026-07-27 |
 | Oráculo | **Operado por nosotros**, formato Fuji/stability | 2026-07-27 |
-| Salida de emergencia | Tres hojas 2-de-2 (= 2-de-3) | 2026-07-27 |
+| Salida de emergencia | Una hoja CSV 2-de-2, pre-firmada al fondear, barriendo a un 2-de-3 | 2026-07-30 |
 | Lenguaje | TypeScript (contrato + servicio) + arnés de tests en Go | 2026-07-27 |
 | Funding rate | **Descartado** — es lo que hace perpetuo a stability | 2026-07-27 |
 
@@ -150,14 +150,15 @@ Internal key = **NUMS** (Nothing Up My Sleeve) — sin key-path spendable, fuerz
 ramas del árbol.
 
 ```
-                    Taproot output (NUMS internal key)
-                                |
-   ┌────────────┬───────────────┼───────────────┬──────────────┐
-   |            |               |               |              |
- Leaf 1      Leaf 2          Leaf 3a         Leaf 3b        Leaf 3c
-Liquidación  Cierre mutuo   CSV 2-de-2      CSV 2-de-2     CSV 2-de-2
-/vencimiento  (2-de-2)     hedge+servicio   long+servicio  hedge+long
-(covenant)
+                Taproot output (NUMS internal key)
+                            |
+        ┌───────────────────┼───────────────────┐
+        |                   |                   |
+      Leaf 1              Leaf 2              Leaf 3
+   Liquidación         Cierre mutuo         Salida de
+   /vencimiento          (2-de-2)          emergencia
+    (covenant)                             CSV 2-de-2
+                                          (hedge+long)
 ```
 
 ### Leaf 1 — Liquidación / vencimiento
@@ -174,33 +175,51 @@ Liquidación  Cierre mutuo   CSV 2-de-2      CSV 2-de-2     CSV 2-de-2
 - Sin oráculo, sin emulador — reparto acordado directamente por ambas partes
 - Ejecutable directamente en Bitcoin L1 (sólo firmas, sin introspección)
 
-### Leaf 3a/3b/3c — Salida de emergencia (2-de-3 entre Hedge, Long y Servicio)
+### Leaf 3 — Salida de emergencia
 
 Ark exige una salida unilateral que no dependa del emulador. Como el covenant se cae en esa
 salida, **no puede ser de firma única**: quien la ejecutase se llevaría todo el colateral,
-incluido el de la otra parte. Por eso exigimos quórum de dos.
+incluido el de la otra parte.
 
-Un 2-de-3 **no se puede escribir en una sola hoja**. El validador del compilador
-(`../compiler/src/compiler/tapscript.rs:147`) lo rechaza citando a arkd:
+Hay que separar dos capas, y es el punto donde es fácil equivocarse:
 
-> arkd's MultisigClosure is **always N-of-N** (the decoder requires the pushed integer to equal
-> the key count, `closure.go:172`). So a declared threshold must equal the key count; anything
-> less cannot decode.
+```
+Hoja (condición de gasto):  CSV + 2-de-2 (hedgePk, longPk)      <- dentro de Ark, N-de-N obligatorio
+Destino (output script):    2-de-3 {hedgePk, longPk, servicePk} <- Bitcoin normal, sin restricciones
+```
 
-Cubierto por el test `threshold_below_keycount_is_shape_error` (`tapscript.rs:704`). La
-restricción aplica **sólo a funciones `tapscript`** — dentro de un covenant sí hay m-de-n
-(ver `threshold_oracle.ark`), pero un exit es por definición `tapscript`.
+Dentro de la VTXO todas las closures que arkd sabe decodificar son N-de-N — no hay umbrales. Pero
+el **destino** del barrido es *"any Bitcoin Output Script"*: una vez el CSV vence y la transacción
+está en cadena, arkd no pinta nada y un 2-de-3 real es trivial.
 
-Como el árbol taproot es un OR, el 2-de-3 se escribe como **tres hojas de 2-de-2**, todas con el
-mismo delay CSV (arkd usa el más pequeño de todos para calcular el exit delay de la VTXO, así que
-una hoja más corta definiría el de todas). Leaf 3c coincide funcionalmente con Leaf 2 salvo por el
-timelock.
+**La transacción de salida se pre-firma al fondear**, con las dos partes cooperando:
 
-Análisis completo, con las fuentes en arkd, el SDK y el compilador: **`unilateral-exit.md`**.
+```
+input:   la VTXO, gastada por Leaf 3 (nSequence = exit)
+output:  el 2-de-3 {hedge, long, service}
+firmas:  hedge + long, recogidas en el momento del funding
+```
 
-Riesgo conocido y aceptado: colusión Servicio + una de las partes. Mitigación: el servicio firma
-de forma determinista según el último precio firmado por el oráculo, nunca a discreción manual;
-cada liquidación queda acompañada de la firma del oráculo como prueba pública auditable.
+Eso es lo que la hace unilateral: a partir de ahí **cualquiera de las dos partes la difunde sola**
+cuando vence el CSV, sin negociar nada con la otra — que es justo lo que no se puede asumir en una
+emergencia. Y es también lo que impide el robo: sólo existe **una** transacción firmada, y su
+destino es fijo. Redirigirla exigiría la firma de la contraparte.
+
+| Riesgo | Cómo queda cubierto |
+|---|---|
+| Que una parte robe el colateral de la otra | La única tx firmada va al 2-de-3; nadie desvía el destino |
+| Que una parte desaparezca y bloquee la salida | La tx ya está firmada; la otra la difunde sola |
+| Que una parte desaparezca tras la salida | En el 2-de-3, la otra parte + el servicio mueven los fondos |
+
+**Consecuencia**: cuando los fondos aterrizan en el 2-de-3, el covenant ya no reparte. El split lo
+resuelven los firmantes del vault — por acuerdo, o con el servicio arbitrando según el precio del
+oráculo. Es inherente a cualquier exit: un exit siempre tira el covenant.
+
+Análisis completo, con las fuentes en arkd y el SDK: **`unilateral-exit.md`**.
+
+Riesgo conocido y aceptado: colusión Servicio + una de las partes dentro del 2-de-3. Mitigación: el
+servicio firma de forma determinista según el último precio firmado por el oráculo, nunca a
+discreción manual; cada firma queda acompañada de la del oráculo como prueba pública auditable.
 
 > **Nota**: todos los contratos de ejemplo del compilador (`fuji_safe`, `cash_secured_put`,
 > `stability_vault`, `bond_mint`...) usan un exit de firma única. Es correcto para contratos de
@@ -233,14 +252,36 @@ el truncamiento de `DIV`, que se gestiona con escala fija a 1e8 igual que stabil
 
 ## Stack
 
+- **Entorno**: `nix develop` (flake en la raíz) — Go 1.26.5 y Node 22, reproducible
 - **Contrato**: objeto `Program` del SDK de TypeScript (`@arkade-os/sdk`)
 - **Servicio web**: TypeScript / Node.js 22
-- **Tests unitarios de aritmética**: `vitest`
-- **Tests del covenant contra la VM real**: Go, contra `github.com/arkade-os/emulator/pkg/arkade`
+- **Matemática de liquidación + tests del covenant**: Go, en `covenant/`, contra
+  `github.com/arkade-os/emulator/pkg/arkade`
 - **Integración**: nigiri + arkd + arkd-wallet + emulator vía Docker Compose
 
 `arkadec` (el `.ark`) se usa como **spec legible**, no está en el build path — ver AGENTS.md
 §Toolchain.
+
+```sh
+nix develop                      # Go 1.26.5 + Node 22
+cd covenant && go test ./...
+```
+
+### `covenant/` — implementación de referencia
+
+Módulo Go sin dependencias que reproduce la aritmética de liquidación **opcode a opcode**,
+truncamiento incluido. Es el oráculo contra el que se contrasta la VM: si este paquete y la VM no
+coinciden, hay un bug en uno de los dos, no una diferencia de redondeo.
+
+| Fichero | Qué cubre |
+|---|---|
+| `settle.go` | `Terms`, `Settle`, `LiquidationPrice`, límite de dust. Aritmética en `math/big` porque BigNum lo es y porque el producto intermedio desborda int64 |
+| `oracle.go` | Digest `sha256(ticker \|\| price \|\| timestamp)` y ventana de frescura de dos lados |
+
+Los tests fijan la conservación del colateral en un barrido de precios, la dirección del
+truncamiento, el clamp de liquidación exactamente en el borde, el desbordamiento de int64, y que
+`LiquidationPrice` coincide con `Settle` (el servicio no puede enseñar un número y el covenant
+actuar sobre otro).
 
 ---
 
@@ -249,7 +290,7 @@ el truncamiento de `DIV`, que se gestiona con escala fija a 1e8 igual que stabil
 | | BCH (AnyHedge) | Arkade |
 |---|---|---|
 | Dónde corre el covenant rico | Consenso de nodos BCH, on-chain, siempre | VM del emulador, off-chain, mientras el ASP coopera |
-| Camino de emergencia | No existe — el camino rico ya es la capa final | Leaf 3a/3b/3c, necesario porque Bitcoin L1 no valida introspección |
+| Camino de emergencia | No existe — el camino rico ya es la capa final | Leaf 3 + paquete pre-firmado, necesario porque Bitcoin L1 no valida introspección |
 | Velocidad de liquidación | Requiere confirmación en bloque BCH | Instantánea, off-chain (salvo Leaf 3) |
 | Seguridad de base | Hashrate/seguridad de BCH | Hereda seguridad de Bitcoin L1 |
 | Confianza requerida en camino normal | Ninguna — el nodo valida | Honestidad del ASP (mitigada por Leaf 3 como red de seguridad) |
@@ -268,3 +309,8 @@ el truncamiento de `DIV`, que se gestiona con escala fija a 1e8 igual que stabil
 - [ ] **Fee del servicio/protocolo** (AnyHedge la cobra incluida trustlessly en el contrato)
 - [ ] **Ratio mínimo de colateral** al fondear, para que el Long no abra posiciones ya liquidables
 - [ ] Alcance del servicio web: ¿sólo API, o también UI?
+- [ ] **Reparto desde el 2-de-3 tras una salida de emergencia**: ¿el servicio arbitra firmando
+      según la misma fórmula sobre el último precio del oráculo, o las partes acuerdan el reparto
+      entre ellas? El covenant ya no está para imponerlo
+- [ ] **Persistencia del paquete pre-firmado**: dónde vive, quién lo custodia, cómo se recupera si
+      una de las partes lo pierde
