@@ -38,9 +38,10 @@ Full protocol spec in `README.md`. Read it first.
 
 | Path | What it is | Why you care |
 |---|---|---|
-| `../compiler` | `arkade-os/compiler` @ `3988a9d` | `examples/stability/stability_vault.ark` is our starting point. Also `fuji_safe`, `options`, `threshold_oracle` |
-| `../emulator` | `arkade-os/emulator` @ `1359823` | The VM. `pkg/arkade` is a standalone Go module — our test harness target |
-| `../bond-protocol` | Previous Arkade project, same author | Working `Program` objects, regtest Docker Compose, justfile. Reuse its setup |
+| AnyHedge | `@generalprotocols/anyhedge-contracts@0.12.1`, `contracts/v0.12/contract.cash` | **The contract we are porting.** 153 lines, in production since 2020. Where this repo and that file disagree, it is right unless Arkade forces the difference |
+| `../compiler` | `arkade-os/compiler` @ `3988a9d` | Worked Arkade Script examples (`stability_vault`, `fuji_safe`, `threshold_oracle`). Reference only — the contract's *design* comes from AnyHedge |
+| `../emulator` | `arkade-os/emulator` @ `1359823` | The VM. `pkg/arkade` is a standalone Go module; we consume it published, not from here |
+| `../bond-protocol` | Previous Arkade project, same author | Regtest Docker Compose and justfile worth reusing |
 
 ## Testing the covenant against the real VM
 
@@ -52,11 +53,12 @@ it can be imported standalone. `NewEngine`, `Engine.Execute()`, `SetStack`, `Get
 `ArkPrevOutFetcher` interface (3 methods), and the **real covenant VM runs in `go test`** — no
 Docker, no arkd, no nigiri.
 
-This is wired up in `covenant/vm.go` and green. `Run(script, stack, outputs)` builds the spending
-transaction, feeds the witness and executes.
+This is wired up in `covenant/vm.go` and green. `Run(script, witness, spend)` builds the spending
+transaction, sets the witness stack and executes. `pkg/arkade` comes from the published module —
+no local `replace`, so the repo builds anywhere — and is the same interpreter the emulator service
+runs before co-signing (`internal/application/tx.go:67`).
 
-Expected payouts live in the test table as constants. Never compute them in Go — that reintroduces
-the parallel implementation the covenant exists to be the only copy of.
+`just check` runs fmt, vet and the tests; every recipe wraps itself in `nix develop`.
 
 This matters more here than in `../bond-protocol`. That project had to write a symbolic
 `stackSim.ts`, whose own header admits *"it is not an interpreter: comparisons and arithmetic
@@ -66,13 +68,25 @@ all need real execution.
 
 ## Critical rules
 
-- **Total collateral is conserved.** The covenant computes the hedge payout and assigns the
-  remainder to the long. Never recompute both sides independently
-- **`OP_DIV` truncates.** Fixed scale of 1e8, and truncation always goes against whoever builds
-  the transaction
-- **Oracle message format is fixed**: `sha256(ticker || price || timestamp)`, price and timestamp
-  as 8-byte LE unsigned, price in USD cents per BTC. Freshness `0 <= age <= 600s`. Reject
-  future-dated prices explicitly
+- **The long's payout is the remainder.** `shortSats` is computed, `longSats = payoutSats -
+  shortSats`. Never derive both sides independently — two computations can disagree by a truncated
+  sat and leave the transaction unspendable
+- **The payouts do not have to sum to `payoutSats`.** The dust floor is `max(DUST, …)` on each
+  side, so a wiped-out side still gets a dust output and the total can exceed `payoutSats`. That is
+  AnyHedge's behaviour; the input covers it. Do not "fix" it into a conservation invariant
+- **`OP_DIV` truncates**, and the truncated fraction stays with the long. Rounding up would pay the
+  short out of collateral it is not owed
+- **Oracle message layout is fixed**: 24 bytes, 8-byte little-endian fields —
+  `timestamp | sequence | price`. No ticker: a different feed is a different oracle key, as in
+  AnyHedge. `CHECKSIGFROMSTACK` verifies over a 32-byte digest and does not hash for the caller, so
+  the witness carries the raw message and the script does the `SHA256`
+- **The sequence is load-bearing.** It must increase by exactly one per publication with no gaps.
+  Settlement requires the message *and its immediate predecessor*, with
+  `settlementSeq == prevSeq + 1` and `prevTimestamp < maturityTimestamp` — that is what makes "the
+  first price after maturity" have one answer and removes any need for a clock
+- **The clamp is load-bearing too.** Every price past a boundary settles identically, so it does
+  not matter which out-of-bounds message a spender picks. Removing either liquidation boundary
+  breaks the no-clock property, not just the economics
 - **The settlement math runs in the covenant, never on our server.** `covenant/` emits that script
   and runs it; it holds no formula of its own. Any design that computes the split service-side is
   wrong
@@ -88,12 +102,16 @@ all need real execution.
   `getInfo().exitDelay`. arkd classifies each closure and applies the matching rule
   (`vtxo_script.go:93`)
 - **Maturity is gated in the covenant, not by a tapscript CLTV.** A leaf-level CLTV is
-  unconditional and would block early liquidation
-- **`tx.offchainTime` does not exist.** It is in `stability_vault.ark` and the compiler's guidance
-  but neither implements it: `introspection.rs:5` maps only `version`/`locktime`/`numInputs`/
-  `numOutputs`/`weight`/`id`, and the VM's only clock is `OP_INSPECTLOCKTIME` (`nLockTime`, chosen
-  by the spender). Do not write a covenant that depends on a wallclock until this is answered —
-  README §Blocked
+  unconditional and would block early liquidation. The gate reads the oracle message's own
+  timestamp
+- **There is no clock, and the contract does not need one.** `tx.offchainTime` does not exist:
+  `introspection.rs:5` maps only `version`/`locktime`/`numInputs`/`numOutputs`/`weight`/`id`, and
+  the VM's only clock is `OP_INSPECTLOCKTIME` — `nLockTime`, chosen by the spender. Any design
+  that reaches for a wallclock or a freshness window is going the wrong way; sequence adjacency
+  plus the clamp is the answer
+- **Values and recipients are both checked, exactly.** `==` on `tx.outputs[i].value` *and* on the
+  lock script. `OP_INSPECTOUTPUTSCRIPTPUBKEY` does not push the script: for a witness program it
+  pushes the program then the version, otherwise `sha256(script)` then `-1`
 - **The 2-of-3 lives in the sweep destination, not in a leaf.** Inside a VTXO every closure is
   N-of-N; outside it, the destination is any Bitcoin output script and a real threshold is fine
 - **No m-of-n in a `tapscript` leaf.** arkd's `MultisigClosure` is always N-of-N; its decoder
@@ -104,8 +122,9 @@ all need real execution.
 - **Ark requires seconds-based timelocks.** CLTV values must be Unix timestamps (>= 500,000,000);
   CSV values must be multiples of 512 seconds. Block-based timelocks are rejected
 - **`cltv` and `csv` are mutually exclusive** in a single leaf
-- **Never trust a green compile.** `isScriptValid()` validates structure, not stack semantics — it
-  returns `true` for a condition script that eats a signature. Read the emitted asm; run it
+- **Never trust a green compile.** Run it on the VM. And expected payouts go in the test table as
+  constants — computing them in Go recreates the parallel implementation the covenant exists to be
+  the only copy of
 
 ## Toolchain
 
@@ -149,20 +168,20 @@ The covenant is enforced by the emulator co-signing, **not** by Bitcoin consensu
 
 ## Current status
 
-**The settlement covenant executes on the real VM and its tests are green** (18 cases). `covenant/`
-builds the script for Leaf 1's payout logic and runs it through `arkade.NewEngine`. What is pinned:
-the split at several prices, the liquidation clamp on the boundary, truncation direction, the int64
-overflow, six underpayment attempts, and script determinism.
+**The settlement covenant is complete and executes on the real VM — 69 cases green.** It checks
+transaction shape, both recipients, both oracle signatures, sequence adjacency, the timing window,
+the clamp, and both payouts exactly. Verified by mutation: deleting the adjacency check fails
+exactly the two cases only it can catch.
 
-What is **not** built yet, in the order it blocks things:
+Not built yet, in order:
 
-1. **The clock.** Freshness and maturity both need a trustworthy time source and there isn't one —
-   see README §Blocked. This gates the rest of Leaf 1
-2. Oracle signature verification (`CHECKSIGFROMSTACK`, message reassembly with `CAT`/`NUM2BIN`)
-3. Output script constraints — the covenant currently checks output *values*, not that they pay
-   the right keys
-4. The tapscript segments, the taproot tree, and the pre-signed exit package
-5. The service (Go): API, users, matching, oracle signing, storage
+1. The tapscript segments and the taproot tree (three leaves)
+2. The pre-signed exit package
+3. The service (Go): API, web, users, matching, oracle signing, storage
+4. The TypeScript verifier, pinned to `covenant`'s golden hex fixture by a CI test
+
+Open and unresolved: batch expiry versus a fixed-term contract (README §Open risk), and the dust
+value, which is BCH's 1332 and needs setting for Bitcoin's relay rules.
 
 Note for integration work: in `../bond-protocol` the regtest stack could never be started because
 Docker Desktop's WSL integration is disabled on this machine. Resolve that before planning
