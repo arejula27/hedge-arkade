@@ -156,9 +156,13 @@ ramas del árbol.
         |                   |                   |
       Leaf 1              Leaf 2              Leaf 3
    Liquidación         Cierre mutuo         Salida de
-   /vencimiento          (2-de-2)          emergencia
-    (covenant)                             CSV 2-de-2
-                                          (hedge+long)
+   /vencimiento          3-de-3             emergencia
+    (covenant)      hedge+long+servidor     CSV 2-de-2
+                                            hedge+long
+
+   ── forfeit closures (sin CSV) ──      ── exit closure ──
+     obligan a llevar la clave            no lleva servidor,
+     del servidor, gasto off-chain        gasto en L1 tras el CSV
 ```
 
 ### Leaf 1 — Liquidación / vencimiento
@@ -171,9 +175,18 @@ ramas del árbol.
 - Normalmente **no se transmite a Bitcoin** — se resuelve dentro de una ronda de Arkade
 
 ### Leaf 2 — Cierre mutuo anticipado
-- 2-de-2 entre Hedge y Long
+- **3-de-3: Hedge + Long + servidor (`signerPk`)**
 - Sin oráculo, sin emulador — reparto acordado directamente por ambas partes
-- Ejecutable directamente en Bitcoin L1 (sólo firmas, sin introspección)
+- Instantáneo y off-chain: se resuelve dentro de una ronda de Arkade, no toca Bitcoin
+
+La clave de arkd es un 2-de-2 sin timelock. arkd parte las hojas en dos clases
+(`vtxo_script.go:93`): las que **no** llevan CSV son *forfeit closures* y **tienen que incluir la
+clave del servidor** — si no, `Validate` devuelve `invalid forfeit closure, signer pubkey not
+found`. Las que llevan CSV son *exit closures* y no la necesitan, pero a cambio sólo se pueden
+gastar en L1 tras desenrollar la VTXO y esperar el delay.
+
+Es coherente: una hoja sin timelock y sin el servidor permitiría gastar en cadena una VTXO cuyo
+historial off-chain el servidor ya había garantizado. El nombre lo dice todo — *forfeit*.
 
 ### Leaf 3 — Salida de emergencia
 
@@ -214,8 +227,6 @@ destino es fijo. Redirigirla exigiría la firma de la contraparte.
 **Consecuencia**: cuando los fondos aterrizan en el 2-de-3, el covenant ya no reparte. El split lo
 resuelven los firmantes del vault — por acuerdo, o con el servicio arbitrando según el precio del
 oráculo. Es inherente a cualquier exit: un exit siempre tira el covenant.
-
-Análisis completo, con las fuentes en arkd y el SDK: **`unilateral-exit.md`**.
 
 Riesgo conocido y aceptado: colusión Servicio + una de las partes dentro del 2-de-3. Mitigación: el
 servicio firma de forma determinista según el último precio firmado por el oráculo, nunca a

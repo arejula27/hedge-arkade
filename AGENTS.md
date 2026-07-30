@@ -69,7 +69,7 @@ all need real execution.
 - **Exit leaves drop the covenant.** One CSV 2-of-2 leaf (hedge + long); the exit transaction is
   **pre-signed at funding** and sweeps to a 2-of-3 `{hedge, long, service}`. Pre-signing is what
   makes it unilateral — either party broadcasts it alone once the CSV matures, and neither can
-  redirect the destination. Full write-up in `unilateral-exit.md`
+  redirect the destination. Full write-up in README §"Leaf 3"
 - **The 2-of-3 lives in the sweep destination, not in a leaf.** Inside a VTXO every closure is
   N-of-N; outside it, the destination is any Bitcoin output script and a real threshold is fine
 - **No m-of-n in a `tapscript` leaf.** arkd's `MultisigClosure` is always N-of-N; its decoder
