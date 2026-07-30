@@ -20,6 +20,8 @@ Referencia original: `anyhedge.cash`
 | Base del contrato | `stability_vault.ark` del repo `arkade-os/compiler` | 2026-07-27 |
 | Oráculo | **Operado por nosotros**, formato Fuji/stability | 2026-07-27 |
 | Salida de emergencia | Una hoja CSV 2-de-2, pre-firmada al fondear, barriendo a un 2-de-3 | 2026-07-30 |
+| Cierre mutuo anticipado | **Al precio del oráculo**, no a reparto libre. Ninguna hoja reparte a discreción | 2026-07-30 |
+| Estructura | 3 hojas: 2 de covenant (off-chain) + 1 de salida (L1). Sólo la salida toca Bitcoin | 2026-07-30 |
 | Lenguaje | TypeScript (contrato + servicio) + arnés de tests en Go | 2026-07-27 |
 | Funding rate | **Descartado** — es lo que hace perpetuo a stability | 2026-07-27 |
 
@@ -46,8 +48,9 @@ Los umbrales de liquidación de AnyHedge y el clamp de stability son la misma co
 `seekerRaw >= totalCollateral` **es** el precio de liquidación bajo, calculado en vez de
 precomputado. Esto elimina la necesidad de derivar los umbrales del leverage por separado.
 
-**Qué hay que añadir sobre stability**: `maturityTime` (stability es perpetuo), cierre mutuo
-anticipado, y las hojas de salida multi-parte.
+**Qué hay que añadir sobre stability**: `maturityTime` (stability es perpetuo), el cierre mutuo
+anticipado — que reutiliza el mismo covenant con otro disparador — y la salida de emergencia
+bipartita, porque stability sale con firma única.
 
 **Qué hay que quitar**: `fundingRatePerSec` y toda la acumulación asociada (`lastUpdate`,
 `elapsed`, `delta`). Un contrato a plazo fijo no paga funding; el precio de la cobertura se paga
@@ -63,8 +66,9 @@ por fuera al abrir la posición.
   colateral extra que garantiza el payout del Hedge.
 - **Oráculo**: firma mensajes de precio periódicamente. Operado por nosotros. No conoce la
   existencia de ningún contrato concreto.
-- **Servicio**: coordina, construye la transacción de liquidación y aparece como tercera clave en
-  las hojas de emergencia. No custodia fondos ni decide el reparto — sólo ejecuta la fórmula.
+- **Servicio**: coordina, construye la transacción de liquidación y es la tercera clave del 2-de-3
+  al que barre la salida de emergencia — no de ninguna hoja. No custodia fondos ni decide el
+  reparto: sólo ejecuta la fórmula.
 - **Emulador (ASP)**: co-firma la liquidación si el Arkade Script pasa. No es Bitcoin consensus.
 
 ---
@@ -155,14 +159,16 @@ ramas del árbol.
         ┌───────────────────┼───────────────────┐
         |                   |                   |
       Leaf 1              Leaf 2              Leaf 3
-   Liquidación         Cierre mutuo         Salida de
-   /vencimiento          3-de-3             emergencia
-    (covenant)      hedge+long+servidor     CSV 2-de-2
-                                            hedge+long
+   Liquidación        Cierre mutuo          Salida de
+   /vencimiento       anticipado            emergencia
+                                          
+   covenant+oráculo   covenant+oráculo      CSV 2-de-2
+   disparo: maturity  disparo: firman        hedge+long
+   o liquidación      ambas partes         (pre-firmada)
 
    ── forfeit closures (sin CSV) ──      ── exit closure ──
-     obligan a llevar la clave            no lleva servidor,
-     del servidor, gasto off-chain        gasto en L1 tras el CSV
+     llevan la clave del servidor         sin servidor,
+     obligatoriamente, gasto off-chain    gasto en L1 tras el CSV
 ```
 
 ### Leaf 1 — Liquidación / vencimiento
@@ -174,19 +180,37 @@ ramas del árbol.
   (liquidación anticipada — el Long se quedó sin colateral)
 - Normalmente **no se transmite a Bitcoin** — se resuelve dentro de una ronda de Arkade
 
-### Leaf 2 — Cierre mutuo anticipado
-- **3-de-3: Hedge + Long + servidor (`signerPk`)**
-- Sin oráculo, sin emulador — reparto acordado directamente por ambas partes
-- Instantáneo y off-chain: se resuelve dentro de una ronda de Arkade, no toca Bitcoin
+### Leaf 2 — Cierre mutuo anticipado, al precio del oráculo
+- Claves: Hedge + Long + emulador (tweakeada) + servidor
+- **Mismo covenant y misma fórmula que la Leaf 1.** Lo único que cambia es el disparador: en vez
+  de `matured || liquidated`, basta con que ambas partes firmen
+- Off-chain, dentro de una ronda de Arkade
 
-La clave de arkd es un 2-de-2 sin timelock. arkd parte las hojas en dos clases
-(`vtxo_script.go:93`): las que **no** llevan CSV son *forfeit closures* y **tienen que incluir la
-clave del servidor** — si no, `Validate` devuelve `invalid forfeit closure, signer pubkey not
-found`. Las que llevan CSV son *exit closures* y no la necesitan, pero a cambio sólo se pueden
-gastar en L1 tras desenrollar la VTXO y esperar el delay.
+El reparto **no se negocia**: sale de `hedgePayoutSats` sobre el último precio firmado, igual que
+en la liquidación. Ninguna hoja del contrato reparte a discreción — o arbitra el oráculo, o no se
+gasta. Un cierre mutuo con reparto libre sería el único camino sin covenant, y no compra nada que
+no dé ya la Leaf 3.
+
+Coste asumido: si el oráculo cae **no hay salida cooperativa rápida**, porque las dos hojas de
+covenant lo necesitan. Un oráculo caído se trata entonces igual que un emulador caído — se sale
+por la Leaf 3. Un solo modo de fallo con una sola escotilla, en vez de dos caminos que mantener.
+
+### Por qué las hojas 1 y 2 llevan la clave del servidor y la 3 no
+
+arkd parte las closures en dos clases (`vtxo_script.go:93`) y las valida distinto:
+
+- **Forfeit closures** — las que **no** llevan CSV (hojas 1 y 2). *Tienen* que incluir la clave del
+  servidor, o `Validate` devuelve `invalid forfeit closure, signer pubkey not found`. A cambio se
+  gastan off-chain, al instante
+- **Exit closures** — las que llevan CSV (hoja 3). No necesitan al servidor, pero sólo se gastan en
+  L1, tras desenrollar la VTXO y esperar el delay
 
 Es coherente: una hoja sin timelock y sin el servidor permitiría gastar en cadena una VTXO cuyo
 historial off-chain el servidor ya había garantizado. El nombre lo dice todo — *forfeit*.
+
+En una frase: **las hojas 1 y 2 son el camino rápido y pagan el peaje de la clave del servidor; la
+3 es el camino lento y paga el peaje del CSV.** El servidor puede bloquear las dos primeras, no
+puede bloquear la tercera.
 
 ### Leaf 3 — Salida de emergencia
 
