@@ -5,7 +5,8 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/arkade-os/emulator/pkg/arkade"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 )
 
 var (
@@ -14,25 +15,80 @@ var (
 	thiefScript = P2TR(bytes.Repeat([]byte{0xcc}, 32))
 )
 
+const (
+	startTime    = 1_800_000_000
+	maturityTime = 1_800_086_400 // a day later
+	baseSequence = 5_000
+)
+
+// oracleKey is fixed rather than random so a failure reproduces exactly.
+var oracleKey, _ = btcec.PrivKeyFromBytes(bytes.Repeat([]byte{0x11}, 32))
+
+func oraclePubKey() []byte { return schnorr.SerializePubKey(oracleKey.PubKey()) }
+
+// withDefaults fills in the parameters every case shares.
+func withDefaults(t Terms) Terms {
+	if t.ShortLockScript == nil {
+		t.ShortLockScript = shortScript
+	}
+	if t.LongLockScript == nil {
+		t.LongLockScript = longScript
+	}
+	if t.OraclePubKey == nil {
+		t.OraclePubKey = oraclePubKey()
+	}
+	if t.StartTimestamp == 0 {
+		t.StartTimestamp = startTime
+	}
+	if t.MaturityTimestamp == 0 {
+		t.MaturityTimestamp = maturityTime
+	}
+	return t
+}
+
 // A $10,000 hedge against 0.2 BTC, liquidating at $50,000 and $200,000.
 // Prices are USD cents per BTC, so the nominal is 1,000,000 cents scaled by 1e8.
-var standard = Terms{
+var standard = withDefaults(Terms{
 	NominalUnitsXSatsPerBtc:              100_000_000_000_000, // 1e6 cents × 1e8
 	SatsForNominalUnitsAtHighLiquidation: 0,                   // pure 1x hedge
 	PayoutSats:                           20_000_000,          // 0.2 BTC
 	LowLiquidationPrice:                  5_000_000,           // $50,000
 	HighLiquidationPrice:                 20_000_000,          // $200,000
-	ShortLockScript:                      shortScript,
-	LongLockScript:                       longScript,
+})
+
+// message is one oracle publication.
+type message struct {
+	timestamp, sequence, price uint64
 }
 
-func price(t *testing.T, cents int64) [][]byte {
+// signed returns the witness for a settlement message and its predecessor,
+// bottom of the stack first.
+func signed(t *testing.T, settle, prev message) [][]byte {
 	t.Helper()
-	b, err := arkade.BigNumFromInt64(cents).Bytes()
+
+	settleMsg := OracleMessage(settle.timestamp, settle.sequence, settle.price)
+	prevMsg := OracleMessage(prev.timestamp, prev.sequence, prev.price)
+
+	settleSig, err := SignOracleMessage(oracleKey, settleMsg)
 	if err != nil {
-		t.Fatalf("encoding price %d: %v", cents, err)
+		t.Fatalf("signing settlement message: %v", err)
 	}
-	return [][]byte{b}
+	prevSig, err := SignOracleMessage(oracleKey, prevMsg)
+	if err != nil {
+		t.Fatalf("signing previous message: %v", err)
+	}
+
+	return [][]byte{settleSig, settleMsg, prevSig, prevMsg}
+}
+
+// maturedAt is the ordinary settlement witness: the predecessor lands just
+// before maturity and the settlement message is the very next publication.
+func maturedAt(t *testing.T, price int64) [][]byte {
+	t.Helper()
+	return signed(t,
+		message{timestamp: maturityTime, sequence: baseSequence + 1, price: uint64(price)},
+		message{timestamp: maturityTime - 60, sequence: baseSequence, price: uint64(price)},
+	)
 }
 
 func script(t *testing.T, terms Terms) []byte {
@@ -116,14 +172,14 @@ var accepted = []settlementCase{
 		// 100_000_000 / 3 = 33_333_333.33…  OP_DIV truncates, and the third of a
 		// sat stays with the long.
 		name: "truncation goes against the short side",
-		terms: Terms{
+		terms: withDefaults(Terms{
 			NominalUnitsXSatsPerBtc: 100_000_000,
 			PayoutSats:              100_000_000,
 			LowLiquidationPrice:     1,
 			HighLiquidationPrice:    1_000_000,
 			ShortLockScript:         shortScript,
 			LongLockScript:          longScript,
-		},
+		}),
 		price: 3,
 		short: 33_333_333, long: 66_666_667,
 	},
@@ -131,14 +187,14 @@ var accepted = []settlementCase{
 		// 9e18 is eleven orders of magnitude past the uint32 ceiling BCH works
 		// in — the constraint behind AnyHedge's published error analysis.
 		name: "a nominal far past what BCH's 4-byte ints could hold",
-		terms: Terms{
+		terms: withDefaults(Terms{
 			NominalUnitsXSatsPerBtc: 9_000_000_000_000_000_000,
 			PayoutSats:              2_000_000,
 			LowLiquidationPrice:     1_000_000_000_000,
 			HighLiquidationPrice:    10_000_000_000_000,
 			ShortLockScript:         shortScript,
 			LongLockScript:          longScript,
-		},
+		}),
 		price: 9_000_000_000_000,
 		short: 1_000_000, long: 1_000_000,
 	},
@@ -146,7 +202,7 @@ var accepted = []settlementCase{
 		// With the leverage term set the short is no longer a pure hedge: it
 		// gives up a fixed slice of its payout in exchange for leverage.
 		name: "the leverage term shifts sats to the long",
-		terms: Terms{
+		terms: withDefaults(Terms{
 			NominalUnitsXSatsPerBtc:              100_000_000_000_000,
 			SatsForNominalUnitsAtHighLiquidation: 5_000_000,
 			PayoutSats:                           20_000_000,
@@ -154,7 +210,7 @@ var accepted = []settlementCase{
 			HighLiquidationPrice:                 20_000_000,
 			ShortLockScript:                      shortScript,
 			LongLockScript:                       longScript,
-		},
+		}),
 		price: 10_000_000,
 		short: 5_000_000, long: 15_000_000,
 	},
@@ -163,7 +219,7 @@ var accepted = []settlementCase{
 func TestSettlementAccepts(t *testing.T) {
 	for _, tc := range accepted {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := Run(script(t, tc.terms), price(t, tc.price), settlement(tc.short, tc.long)); err != nil {
+			if err := Run(script(t, tc.terms), maturedAt(t, tc.price), settlement(tc.short, tc.long)); err != nil {
 				t.Errorf("VM rejected a correct settlement: %v", err)
 			}
 		})
@@ -190,7 +246,7 @@ func TestSettlementIsExactToTheSat(t *testing.T) {
 				{"a sat moved from long to short", tc.short + 1, tc.long - 1},
 				{"a sat moved from short to long", tc.short - 1, tc.long + 1},
 			} {
-				if err := Run(s, price(t, tc.price), settlement(nudge.short, nudge.long)); err == nil {
+				if err := Run(s, maturedAt(t, tc.price), settlement(nudge.short, nudge.long)); err == nil {
 					t.Errorf("VM accepted %s", nudge.what)
 				}
 			}
@@ -227,7 +283,7 @@ func TestSettlementPinsRecipients(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := Run(s, price(t, p), tc.spend); err == nil {
+			if err := Run(s, maturedAt(t, p), tc.spend); err == nil {
 				t.Error("VM accepted a settlement paying the wrong recipient")
 			}
 		})
@@ -243,14 +299,14 @@ func TestSettlementPinsTransactionShape(t *testing.T) {
 	t.Run("a third output", func(t *testing.T) {
 		spend := settlement(short, long)
 		spend.Outputs = append(spend.Outputs, Payout{Sats: 1_000, LockScript: thiefScript})
-		if err := Run(s, price(t, p), spend); err == nil {
+		if err := Run(s, maturedAt(t, p), spend); err == nil {
 			t.Error("VM accepted a third output")
 		}
 	})
 
 	t.Run("only one output", func(t *testing.T) {
 		spend := Spend{Outputs: []Payout{{Sats: short, LockScript: shortScript}}}
-		if err := Run(s, price(t, p), spend); err == nil {
+		if err := Run(s, maturedAt(t, p), spend); err == nil {
 			t.Error("VM accepted a single output")
 		}
 	})
@@ -258,7 +314,7 @@ func TestSettlementPinsTransactionShape(t *testing.T) {
 	t.Run("a second input", func(t *testing.T) {
 		spend := settlement(short, long)
 		spend.ExtraInputs = 1
-		if err := Run(s, price(t, p), spend); err == nil {
+		if err := Run(s, maturedAt(t, p), spend); err == nil {
 			t.Error("VM accepted an extra input")
 		}
 	})
@@ -351,7 +407,7 @@ func TestEveryParameterChangesTheScript(t *testing.T) {
 // The client verifies a contract by rebuilding it and comparing bytes, so the
 // build must be deterministic and stable. When this fails on purpose, update the
 // constant — and remember the TypeScript verifier has to move with it.
-const standardScriptHex = "d4519dd5529d00d1519d20aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa8851d1519d20bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb8804002d3101a303404b4ca40600407a10f35a7c960094023405a47604002d31017c94023405a451cf9d00cf9c"
+const standardScriptHex = "d4519dd5529d00d1519d20aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa8851d1519d20bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb88766ba8204f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aacc69766ba8204f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aacc696c6c7600587fd80480234b6b9f6958587fd87600a06951937858587fd89d7600587fd8760400d2496ba2697c60587fd87600a06904002d3101a303404b4ca4766b7603404b4c9c7c04002d31019c9b7c0480234b6ba29b696c0600407a10f35a7c960094023405a47604002d31017c94023405a451cf9d00cf9c"
 
 func TestSettlementScriptIsStable(t *testing.T) {
 	got := hex.EncodeToString(script(t, standard))

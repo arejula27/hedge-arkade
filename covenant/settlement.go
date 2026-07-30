@@ -45,6 +45,15 @@ type Terms struct {
 	// the amounts correct and the recipients up to whoever spends.
 	ShortLockScript []byte
 	LongLockScript  []byte
+
+	// OraclePubKey is the 32-byte x-only key of the price feed. A different feed
+	// means a different key, as in AnyHedge — there is no ticker field.
+	OraclePubKey []byte
+
+	// StartTimestamp is the earliest timestamp a liquidation may be redeemed at.
+	// MaturityTimestamp is when the contract settles normally.
+	StartTimestamp    int64
+	MaturityTimestamp int64
 }
 
 func (t Terms) validate() error {
@@ -64,56 +73,60 @@ func (t Terms) validate() error {
 		return fmt.Errorf("short lock script is empty")
 	case len(t.LongLockScript) == 0:
 		return fmt.Errorf("long lock script is empty")
+	case len(t.OraclePubKey) != 32:
+		return fmt.Errorf("oracle key must be 32 bytes x-only, got %d", len(t.OraclePubKey))
+	case t.StartTimestamp <= 0:
+		return fmt.Errorf("start timestamp must be positive, got %d", t.StartTimestamp)
+	case t.MaturityTimestamp <= t.StartTimestamp:
+		return fmt.Errorf("maturity %d is not after the start timestamp %d",
+			t.MaturityTimestamp, t.StartTimestamp)
 	}
 	return nil
 }
 
 // SettlementScript emits the Arkade Script for AnyHedge's payout path.
 //
-// Witness: the oracle price, as the only stack item.
+// Witness, bottom to top: settlementSignature, settlementMessage,
+// previousSignature, previousMessage.
+//
+// The spender must supply the settlement message *and its immediate
+// predecessor*. That is what replaces a clock: if the predecessor is before
+// maturity and the settlement message is the very next one in the oracle's
+// sequence, the settlement message is the first one published on or after
+// maturity, and there is exactly one of those. For a liquidation the price is
+// clamped to the boundary it crossed, so every qualifying message pays the same
+// and there is nothing to shop for either.
 //
 //	clampedPrice = max(min(price, high), low)
 //	shortSats    = max(DUST, nominalUnits/clampedPrice - satsAtHighLiquidation)
 //	longSats     = max(DUST, payoutSats - shortSats)
-//
-// Both outputs are then checked exactly — value and recipient — with the
-// transaction pinned to one input and two outputs.
-//
-// Not yet built: oracle signature verification and the sequence-adjacency check
-// that pins which oracle message may be used. Until those land the price on the
-// witness is unauthenticated, so this is not deployable.
 func (t Terms) SettlementScript() ([]byte, error) {
 	if err := t.validate(); err != nil {
 		return nil, err
 	}
 
-	nominal, err := bigNumBytes(t.NominalUnitsXSatsPerBtc)
-	if err != nil {
-		return nil, err
-	}
-	leverage, err := bigNumBytes(t.SatsForNominalUnitsAtHighLiquidation)
-	if err != nil {
-		return nil, err
-	}
-	payout, err := bigNumBytes(t.PayoutSats)
-	if err != nil {
-		return nil, err
-	}
-	low, err := bigNumBytes(t.LowLiquidationPrice)
-	if err != nil {
-		return nil, err
-	}
-	high, err := bigNumBytes(t.HighLiquidationPrice)
-	if err != nil {
-		return nil, err
-	}
-	dust, err := bigNumBytes(Dust)
-	if err != nil {
-		return nil, err
+	consts := map[string][]byte{}
+	for name, v := range map[string]int64{
+		"nominal":  t.NominalUnitsXSatsPerBtc,
+		"leverage": t.SatsForNominalUnitsAtHighLiquidation,
+		"payout":   t.PayoutSats,
+		"low":      t.LowLiquidationPrice,
+		"high":     t.HighLiquidationPrice,
+		"dust":     Dust,
+		"start":    t.StartTimestamp,
+		"maturity": t.MaturityTimestamp,
+	} {
+		encoded, err := bigNumBytes(v)
+		if err != nil {
+			return nil, fmt.Errorf("encoding %s: %w", name, err)
+		}
+		consts[name] = encoded
 	}
 
 	b := txscript.NewScriptBuilder()
 
+	// --- Transaction shape ---------------------------------------------------
+	//
 	// Exactly one input and two outputs. A second input would let a spender
 	// bring along value the covenant never accounted for.
 	b.AddOp(arkade.OP_INSPECTNUMINPUTS)
@@ -123,8 +136,10 @@ func (t Terms) SettlementScript() ([]byte, error) {
 	b.AddOp(arkade.OP_2)
 	b.AddOp(arkade.OP_NUMEQUALVERIFY)
 
-	// Recipients, before any arithmetic: getting the amounts right is pointless
-	// if they can be sent anywhere.
+	// --- Recipients ----------------------------------------------------------
+	//
+	// Before any arithmetic: getting the amounts right is pointless if they can
+	// be sent anywhere.
 	if err := addLockScriptCheck(b, arkade.OP_0, t.ShortLockScript); err != nil {
 		return nil, fmt.Errorf("short lock script: %w", err)
 	}
@@ -132,31 +147,114 @@ func (t Terms) SettlementScript() ([]byte, error) {
 		return nil, fmt.Errorf("long lock script: %w", err)
 	}
 
-	// clampedPrice = max(min(price, high), low)
-	b.AddData(high)
-	b.AddOp(arkade.OP_MIN)
-	b.AddData(low)
-	b.AddOp(arkade.OP_MAX) // clampedPrice
+	// --- Authenticate both oracle messages -----------------------------------
+	//
+	// CHECKSIGFROMSTACK verifies a signature over stack data and deliberately
+	// does not hash for the caller, so the witness carries the raw message and
+	// the script hashes it. Each message is stashed on the alt stack before its
+	// digest is consumed.
+	//
+	// stack: settleSig settleMsg prevSig prevMsg
+	b.AddOp(arkade.OP_DUP)
+	b.AddOp(arkade.OP_TOALTSTACK)
+	b.AddOp(arkade.OP_SHA256)
+	b.AddData(t.OraclePubKey)
+	b.AddOp(arkade.OP_CHECKSIGFROMSTACK)
+	b.AddOp(arkade.OP_VERIFY)
+	// stack: settleSig settleMsg
+	b.AddOp(arkade.OP_DUP)
+	b.AddOp(arkade.OP_TOALTSTACK)
+	b.AddOp(arkade.OP_SHA256)
+	b.AddData(t.OraclePubKey)
+	b.AddOp(arkade.OP_CHECKSIGFROMSTACK)
+	b.AddOp(arkade.OP_VERIFY)
+	// stack: empty     alt: prevMsg settleMsg
+	b.AddOp(arkade.OP_FROMALTSTACK) // settleMsg
+	b.AddOp(arkade.OP_FROMALTSTACK) // settleMsg prevMsg
 
+	// --- The predecessor is before maturity ----------------------------------
+	b.AddOp(arkade.OP_DUP)
+	addFieldExtract(b, oracleTimestampOffset)
+	b.AddData(consts["maturity"])
+	b.AddOp(arkade.OP_LESSTHAN)
+	b.AddOp(arkade.OP_VERIFY)
+
+	// --- The two messages are adjacent in the oracle's sequence --------------
+	//
+	// A negative content sequence is metadata rather than a price, which is why
+	// AnyHedge rejects it explicitly.
+	addFieldExtract(b, oracleSequenceOffset) // settleMsg prevSeq  (consumes prevMsg)
+	b.AddOp(arkade.OP_DUP)
+	b.AddOp(arkade.OP_0)
+	b.AddOp(arkade.OP_GREATERTHAN)
+	b.AddOp(arkade.OP_VERIFY)
+	b.AddOp(arkade.OP_1)
+	b.AddOp(arkade.OP_ADD) // settleMsg prevSeq+1
+	b.AddOp(arkade.OP_OVER)
+	addFieldExtract(b, oracleSequenceOffset) // settleMsg prevSeq+1 settleSeq
+	b.AddOp(arkade.OP_NUMEQUALVERIFY)        // settleMsg
+
+	// --- The settlement message is not before the earliest liquidation -------
+	b.AddOp(arkade.OP_DUP)
+	addFieldExtract(b, oracleTimestampOffset) // settleMsg settleTs
+	b.AddOp(arkade.OP_DUP)
+	b.AddData(consts["start"])
+	b.AddOp(arkade.OP_GREATERTHANOREQUAL)
+	b.AddOp(arkade.OP_VERIFY) // settleMsg settleTs
+
+	// --- Price, rejected if not positive, then clamped -----------------------
+	b.AddOp(arkade.OP_SWAP)               // settleTs settleMsg
+	addFieldExtract(b, oraclePriceOffset) // settleTs price
+	b.AddOp(arkade.OP_DUP)
+	b.AddOp(arkade.OP_0)
+	b.AddOp(arkade.OP_GREATERTHAN)
+	b.AddOp(arkade.OP_VERIFY)
+	b.AddData(consts["high"])
+	b.AddOp(arkade.OP_MIN)
+	b.AddData(consts["low"])
+	b.AddOp(arkade.OP_MAX) // settleTs clampedPrice
+
+	// --- Either matured, or the price crossed a boundary ---------------------
+	//
+	// The clamp keeps the price inside [low, high], so "out of bounds" is the
+	// price having landed exactly on a boundary.
+	b.AddOp(arkade.OP_DUP)
+	b.AddOp(arkade.OP_TOALTSTACK) // alt: clampedPrice
+	b.AddOp(arkade.OP_DUP)
+	b.AddData(consts["low"])
+	b.AddOp(arkade.OP_NUMEQUAL)
+	b.AddOp(arkade.OP_SWAP)
+	b.AddData(consts["high"])
+	b.AddOp(arkade.OP_NUMEQUAL)
+	b.AddOp(arkade.OP_BOOLOR) // settleTs outOfBounds
+	b.AddOp(arkade.OP_SWAP)
+	b.AddData(consts["maturity"])
+	b.AddOp(arkade.OP_GREATERTHANOREQUAL) // outOfBounds matured
+	b.AddOp(arkade.OP_BOOLOR)
+	b.AddOp(arkade.OP_VERIFY)
+	b.AddOp(arkade.OP_FROMALTSTACK) // clampedPrice
+
+	// --- Payouts -------------------------------------------------------------
+	//
 	// shortSats = max(DUST, nominal/clampedPrice - leverage)
 	//
 	// The division runs on the VM, and so must the multiplication that produces
 	// `nominal`: it overflows int64 for a large position, and BigNum is the only
 	// arithmetic here without a ceiling.
-	b.AddData(nominal)
+	b.AddData(consts["nominal"])
 	b.AddOp(arkade.OP_SWAP)
 	b.AddOp(arkade.OP_DIV)
-	b.AddData(leverage)
+	b.AddData(consts["leverage"])
 	b.AddOp(arkade.OP_SUB)
-	b.AddData(dust)
+	b.AddData(consts["dust"])
 	b.AddOp(arkade.OP_MAX) // shortSats
 
 	// longSats = max(DUST, payoutSats - shortSats)
 	b.AddOp(arkade.OP_DUP)
-	b.AddData(payout)
+	b.AddData(consts["payout"])
 	b.AddOp(arkade.OP_SWAP)
 	b.AddOp(arkade.OP_SUB)
-	b.AddData(dust)
+	b.AddData(consts["dust"])
 	b.AddOp(arkade.OP_MAX) // shortSats longSats
 
 	// Output 1 pays the long, exactly.
@@ -170,6 +268,15 @@ func (t Terms) SettlementScript() ([]byte, error) {
 	b.AddOp(arkade.OP_NUMEQUAL)
 
 	return b.Script()
+}
+
+// addFieldExtract replaces the oracle message on top of the stack with one of
+// its little-endian fields as a number.
+func addFieldExtract(b *txscript.ScriptBuilder, offset int) {
+	b.AddInt64(int64(offset))
+	b.AddInt64(oracleFieldSize)
+	b.AddOp(arkade.OP_SUBSTR)
+	b.AddOp(arkade.OP_BIN2NUM)
 }
 
 // addLockScriptCheck emits a comparison against the scriptPubKey of one output.

@@ -16,19 +16,25 @@
           name = "hedge";
 
           packages = with pkgs; [
-            # Covenant tests run against the real Arkade VM (../emulator/pkg/arkade)
+            # Service, contract builder, and covenant tests against the real
+            # Arkade VM (github.com/arkade-os/emulator/pkg/arkade)
             go
             gopls
             gotools
 
-            # Contract Program objects + web service
+            # Client-side contract verifier
             nodejs_22
 
+            just
             git
           ];
 
+          # Only greet an interactive shell: `nix develop --command` is used by
+          # the justfile, and stray output there ends up mixed into tool results.
           shellHook = ''
-            echo "hedge dev shell — go $(go version | cut -d' ' -f3), node $(node --version)"
+            if [[ $- == *i* ]]; then
+              echo "hedge dev shell — go $(go version | cut -d' ' -f3), node $(node --version), just $(just --version | cut -d' ' -f2)"
+            fi
           '';
         };
       });

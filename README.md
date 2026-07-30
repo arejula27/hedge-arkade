@@ -388,7 +388,7 @@ truncation, handled with a fixed 1e8 scale exactly as stability does.
 
 ## Stack
 
-- **Environment**: `nix develop` (flake at the repo root) — Go 1.26.5 and Node 22, reproducible
+- **Environment**: `nix develop` (flake at the repo root) — Go 1.26.5, Node 22 and `just`
 - **Service** (API, web, users, matching, oracle, arkd client): **Go**
 - **Contract builder**: Go, in `covenant/`
 - **Client verifier**: TypeScript, running in the browser — see §Verification
@@ -399,9 +399,12 @@ truncation, handled with a fixed 1e8 scale exactly as stability does.
 AGENTS.md §Toolchain.
 
 ```sh
-nix develop                      # Go 1.26.5 + Node 22
-cd covenant && go test ./...
+just              # list recipes
+just check        # fmt, vet, tests
 ```
+
+Every recipe wraps itself in `nix develop`, so they work from a bare shell with only nix
+installed.
 
 ### `covenant/` — the contract, and the VM it runs on
 
@@ -411,33 +414,49 @@ would predict.
 
 | File | What it covers |
 |---|---|
-| `settlement.go` | `Terms` and `SettlementScript()` — AnyHedge's payout path, built with `txscript.NewScriptBuilder` and the opcodes `pkg/arkade` exports |
+| `settlement.go` | `Terms` and `SettlementScript()` — AnyHedge's payout path in full: transaction shape, recipients, both oracle signatures, sequence adjacency, the clamp and the payouts |
+| `oracle.go` | The message layout and the signing the oracle service will do |
 | `vm.go` | The harness: an `ArkPrevOutFetcher`, a synthetic spending transaction, and `Run` to execute a script on `arkade.NewEngine` |
 
 `pkg/arkade` is the same interpreter the emulator service runs before co-signing
 (`internal/application/tx.go:67`), pulled in as a published module — no local `replace`, so the
-repo builds anywhere. `Run` also applies `WithExactComputeLimits(DefaultComputeLimits())`, which is
-the table the service uses when no `COMPUTE_LIMITS` overrides are set, so a change to those
-defaults surfaces as a test failure.
+repo builds anywhere. `Run` also applies `WithExactComputeLimits(DefaultComputeLimits())`, the
+table the service uses when no `COMPUTE_LIMITS` overrides are set.
 
-All arithmetic runs on the VM. Expected payouts appear exactly once, in the accepted-settlements
-table; every other test derives from it.
+`CHECKSIGFROMSTACK` verifies over a 32-byte digest and deliberately does not hash for the caller,
+so the witness carries the raw message and the script hashes it. The witness is, bottom to top:
+`settlementSignature, settlementMessage, previousSignature, previousMessage`.
 
-52 cases, covering:
+**69 cases**, all green:
 
 - The clamp at both boundaries, one cent inside each, and far past them
-- The dust floor, including the case where the two payouts sum to more than `payoutSats`
-- Truncation direction, the leverage term, and a nominal of 9e18
-- **Exactness**: for every accepted settlement, six mutations — each side ±1, and a sat moved in
-  either direction — must all fail. Overpaying is a different settlement, not a generous one
-- **Recipients**: payouts redirected, swapped, and sent to a non-taproot output
+- The dust floor, including where the two payouts sum to more than `payoutSats`
+- Truncation direction, the leverage term, a nominal of 9e18
+- **Exactness**: for every accepted settlement, six mutations — each side ±1, a sat moved either
+  way — must all fail. Overpaying is a different settlement, not a generous one
+- **Recipients**: payouts redirected, swapped, sent to a non-taproot output
 - **Shape**: a third output, a missing output, an extra input
-- Every parameter changing the script, and a golden hex fixture the TypeScript verifier will pin to
+- **Timing**: settlement at maturity, a liquidation at either boundary before maturity, and a
+  liquidation exactly at `startTimestamp`
+- **The attack the sequence check exists for**: a mid-range price from mid-contract, a message that
+  is not the first after maturity, a gap in the sequence, the predecessor and settlement swapped,
+  the same message used twice, a zero sequence, a zero price
+- **Authentication**: each field edited after signing, a signature from the wrong key, the two
+  signatures swapped, an empty signature, a garbage signature, and a contract pinned to a different
+  oracle key
+- Every parameter changing the script, plus a golden hex fixture the TypeScript verifier pins to
 
-**Not deployable yet.** The price on the witness is unauthenticated, so what remains is:
+Verified by mutation: deleting the adjacency check makes exactly the two cases only it can catch
+fail, and nothing else — the rest are caught by the maturity-or-liquidation disjunction behind it.
 
-1. **Oracle signature verification** — `CHECKSIGFROMSTACK` over the reassembled message
-2. **Sequence adjacency** — the two-message check that pins which oracle message may be used
+```sh
+just check        # fmt, vet, tests
+just test-one Sequence
+just script-hex   # the fixture the verifier must match
+```
+
+**What remains before deployment**: the tapscript segments, the taproot tree, and the pre-signed
+exit package. The covenant itself is complete.
 
 ### Verification
 
