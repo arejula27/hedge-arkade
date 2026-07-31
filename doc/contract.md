@@ -90,9 +90,39 @@ covenant with a clear cause instead of inside arkd's rebuild.
 
 ---
 
+## The contract is one VTXO
+
+A whole contract is a **single VTXO** — one output, holding exactly `payoutSats`. Both sides' money
+sits in the same place, and which side owns how much of it is decided later, by whichever leaf ends
+up being spent.
+
+Two inputs appear at funding, one per party, but they belong to the funding transaction rather than
+to the contract:
+
+```
+  FUNDING (one Arkade transaction, two inputs)
+
+    short's VTXO  ──┐                    ┌──►  THE CONTRACT VTXO
+                    ├──► funding tx ─────┤       exactly payoutSats
+    long's VTXO   ──┘                    │       taproot, 3 leaves
+                                         ├──►  short's change
+                                         └──►  long's change
+
+  SPENDING (one input — the covenant requires it)
+
+                         ┌── leaf 1 ──►  short's payout + long's payout
+    THE CONTRACT VTXO ───┼── leaf 2 ──►  whatever the two of them agree
+                         └── leaf 3 ──►  a 2-of-3, on Bitcoin, after the CSV
+```
+
+So: one VTXO, created by a transaction with two inputs, and spent as one input. The covenant pins
+that last part — `OP_INSPECTNUMINPUTS` must equal 1 — so nobody can settle the contract alongside
+other money and blur whose sats went where.
+
 ## Taproot structure
 
-Internal key = **NUMS** (Nothing Up My Sleeve) — no key-path spend, forcing one of the branches.
+That single VTXO's output script is a taproot tree. Internal key = **NUMS** (Nothing Up My Sleeve)
+— no key-path spend, forcing one of the branches.
 
 ```
                 Taproot output (NUMS internal key)
