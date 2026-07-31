@@ -623,3 +623,50 @@ func namesBoth(keys []*btcec.PublicKey, short, long *btcec.PublicKey) bool {
 	}
 	return found == 2
 }
+
+// Forfeiting is not a limited power. The forfeit hands the VTXO to the
+// operator, and what comes back is whatever the intent registered alongside it
+// asked for — an address of the signer's choosing, if the signer chose it. So a
+// leaf that can sign a forfeit is a leaf that can move the money.
+//
+// That is what rules out the obvious simplification of a fourth leaf reserved
+// for renewal. It could not be gated by a covenant, because no covenant can
+// permit a transaction paying the operator's forfeit address; so it would be
+// gated by keys alone, and the only key set that is safe is one that needs both
+// parties — which is leaf 2 again.
+//
+// This is the invariant that would break if someone added one anyway: every
+// forfeit closure either carries the covenant, or needs both parties.
+func TestNoForfeitClosureBypassesTheParties(t *testing.T) {
+	c := contract()
+
+	settlementKey, err := c.SettlementKey()
+	if err != nil {
+		t.Fatalf("SettlementKey: %v", err)
+	}
+
+	vtxo, err := c.VtxoScript()
+	if err != nil {
+		t.Fatalf("VtxoScript: %v", err)
+	}
+
+	for i, closure := range vtxo.ForfeitClosures() {
+		multisig, ok := closure.(*arkscript.MultisigClosure)
+		if !ok {
+			t.Fatalf("forfeit closure %d is not a multisig: %T", i, closure)
+		}
+
+		gated := false
+		for _, k := range multisig.PubKeys {
+			if xonly(k) == xonly(settlementKey) {
+				gated = true
+			}
+		}
+
+		if !gated && !namesBoth(multisig.PubKeys, c.Keys.Short, c.Keys.Long) {
+			t.Errorf("forfeit closure %d neither runs the covenant nor needs both "+
+				"parties: whoever holds its keys can forfeit the contract into an "+
+				"address of their own choosing", i)
+		}
+	}
+}

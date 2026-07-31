@@ -180,6 +180,30 @@ least one covenant-free collaborative leaf.** A tree whose every collaborative p
 cannot be handed to the operator, because a forfeit pays the operator and no useful covenant permits
 that.
 
+### Why not a fourth leaf, just for renewal
+
+Because there is nothing to put in it. **Forfeiting is not a limited power**: the forfeit hands the
+VTXO over, and what comes back is whatever the intent registered alongside it asked for — an address
+of the signer's choosing, if the signer chose it. A leaf that can sign a forfeit is a leaf that can
+move the money.
+
+That leaves no way to make a renewal-only leaf weaker than leaf 2:
+
+- It cannot be gated by a covenant, for the reason above — no covenant permits a transaction paying
+  the operator's forfeit address
+- So it is gated by keys alone, and the only safe key set is one needing both parties
+- Which is `short + long + arkd`. The same script, the same tapleaf, the same leaf
+
+The one shape that is genuinely different is `short + long + service + arkd`, if arkd turns out to
+require the forfeit closure to name the delegate submitting it. That is not a simplification — it is
+leaf 2 plus a service veto on renewal — and whether it is needed is the open question in
+[arkade-constraints](arkade-constraints.md).
+
+The corollary is that **"mutual redemption off, renewal on" is not a policy that can be expressed**.
+Both are the same capability: both parties plus the operator moving the money wherever they agree.
+The flag is not hiding a missing feature; it is an honest statement that one cannot be had without
+the other. `TestNoForfeitClosureBypassesTheParties` pins the invariant a fourth leaf would break.
+
 Three things fall out of that picture:
 
 - **The amount is untouchable.** The covenant pins the settlement input at exactly `payoutSats`, so
