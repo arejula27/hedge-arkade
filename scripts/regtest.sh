@@ -40,8 +40,16 @@ case "${1:-}" in
     logs)
         ( cd "$DIR" && node regtest.mjs logs "${@:2}" )
         ;;
+    # faucet <address> <amountBtc> — pays and confirms, so a caller only has to
+    # wait for arkd to notice rather than for a block.
+    faucet)
+        ( cd "$DIR" && node regtest.mjs faucet "$2" "$3" --confirm )
+        ;;
+    mine)
+        ( cd "$DIR" && node regtest.mjs mine "${2:-1}" )
+        ;;
     *)
-        echo "usage: $0 {up|down|clean|logs}" >&2
+        echo "usage: $0 {up|down|clean|logs|faucet <addr> <btc>|mine [n]}" >&2
         exit 64
         ;;
 esac

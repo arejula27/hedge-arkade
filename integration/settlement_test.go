@@ -27,111 +27,142 @@ const (
 	longPayout      = 10_000_000
 )
 
-// This is the test the in-process VM cannot be: it hands a real settlement
-// transaction to the real emulator, which parses the emulator packet, matches
-// the tweaked key against the leaf, executes the covenant and only signs if it
-// succeeds.
+// boardedSats is what the party boards: enough to fund the contract and leave
+// change well above dust.
+const boardedSats = 50_000_000
+
+// The whole path a settlement takes in production, on a contract VTXO that
+// really exists.
 //
-// The unit suite builds its own transaction. This one is built by
-// offchain.BuildTxs, so it carries the checkpoint, the extension OP_RETURN and
-// the P2A anchor a real settlement has — the shape a covenant that counted
-// outputs would reject.
-func TestTheEmulatorSignsARealSettlement(t *testing.T) {
-	ctx := t.Context()
+// The client submits to the emulator, which parses the emulator packet, matches
+// the tweaked key against the leaf, executes the covenant, signs, and — as the
+// finalizer — forwards to arkd (`internal/application/tx.go:146`). So this one
+// call exercises the covenant, arkd's value conservation, its output
+// validation, and its signature checks.
+//
+// It is also the only tier that sees transaction shape. The transaction is
+// built by offchain.BuildTxs, so it carries the checkpoint, the extension
+// OP_RETURN and the P2A anchor — four outputs, not the two a covenant that
+// counted them would demand.
+func TestTheStackSettlesTheContract(t *testing.T) {
 	c := contract(t)
+	p := newParty(t)
+	p.fund(t, boardedSats)
 
-	arkTx, checkpoints := buildSettlement(t, c, shortPayout, longPayout)
+	outpoint := fundContract(t, p, c)
+	arkTx, checkpoints := settlementSpending(t, c, outpoint, shortPayout, longPayout)
 
-	encoded, err := arkTx.B64Encode()
-	if err != nil {
-		t.Fatalf("encoding the settlement: %v", err)
-	}
-
-	signed, signedCheckpoints, err := stack.emulator.SubmitTx(ctx, encoded, encode(t, checkpoints))
-	if err != nil {
-		t.Fatalf("the emulator refused a correct settlement: %v", err)
-	}
-	if signed == "" {
-		t.Fatal("the emulator returned an empty transaction")
-	}
-	if len(signedCheckpoints) != len(checkpoints) {
-		t.Fatalf("got %d signed checkpoints, want %d", len(signedCheckpoints), len(checkpoints))
+	if err := p.submitToEmulator(t, arkTx, checkpoints); err != nil {
+		t.Fatalf("the stack refused a correct settlement: %v", err)
 	}
 }
 
-// The same transaction with a sat moved to the short. Everything else is
-// identical, so a refusal can only come from the covenant.
-func TestTheEmulatorRefusesAStolenSat(t *testing.T) {
-	ctx := t.Context()
+// A sat moved to the short. The transaction still balances, so nothing arkd
+// checks is violated — only the covenant is.
+func TestTheStackRefusesAStolenSat(t *testing.T) {
 	c := contract(t)
+	p := newParty(t)
+	p.fund(t, boardedSats)
 
-	arkTx, checkpoints := buildSettlement(t, c, shortPayout+1, longPayout-1)
+	outpoint := fundContract(t, p, c)
+	arkTx, checkpoints := settlementSpending(t, c, outpoint, shortPayout+1, longPayout-1)
 
-	encoded, err := arkTx.B64Encode()
-	if err != nil {
-		t.Fatalf("encoding the settlement: %v", err)
-	}
-
-	if _, _, err := stack.emulator.SubmitTx(ctx, encoded, encode(t, checkpoints)); err == nil {
-		t.Fatal("the emulator signed a settlement that moved a sat to the short")
+	if err := p.submitToEmulator(t, arkTx, checkpoints); err == nil {
+		t.Fatal("the stack settled a transaction that moved a sat to the short")
 	}
 }
 
-// Redirecting a payout leaves the amounts correct and the recipient arbitrary.
-func TestTheEmulatorRefusesARedirectedPayout(t *testing.T) {
-	ctx := t.Context()
+// The amounts are right and the recipient is not. Value conservation cannot
+// catch this; only the lock script check can.
+func TestTheStackRefusesARedirectedPayout(t *testing.T) {
 	c := contract(t)
+	p := newParty(t)
+	p.fund(t, boardedSats)
 
-	stolen := c
-	stolen.Terms.LongLockScript = p2tr(key(0x99).PubKey())
+	outpoint := fundContract(t, p, c)
 
-	// The covenant is still the one the leaf commits to; only the transaction's
-	// outputs are wrong.
-	arkTx, checkpoints := buildSettlementPaying(t, c, []*wire.TxOut{
+	thief := p2tr(key(0x99).PubKey())
+	arkTx, checkpoints := settlementPaying(t, c, outpoint, []*wire.TxOut{
 		{Value: shortPayout, PkScript: c.Terms.ShortLockScript},
-		{Value: longPayout, PkScript: stolen.Terms.LongLockScript},
+		{Value: longPayout, PkScript: thief},
 	})
 
-	encoded, err := arkTx.B64Encode()
-	if err != nil {
-		t.Fatalf("encoding the settlement: %v", err)
-	}
-
-	if _, _, err := stack.emulator.SubmitTx(ctx, encoded, encode(t, checkpoints)); err == nil {
-		t.Fatal("the emulator signed a settlement paying the wrong recipient")
+	if err := p.submitToEmulator(t, arkTx, checkpoints); err == nil {
+		t.Fatal("the stack settled a payout to the wrong recipient")
 	}
 }
 
-func buildSettlement(t *testing.T, c covenant.Contract, short, long int64) (*psbt.Packet, []*psbt.Packet) {
+// fundContract spends the party's VTXO into the contract address with exactly
+// PayoutSats — which is what the covenant requires the input to hold — and
+// sends the rest back as change. It returns the contract VTXO's outpoint.
+//
+// This transaction has no covenant on its input, so it goes straight to arkd.
+func fundContract(t *testing.T, p *party, c covenant.Contract) wire.OutPoint {
 	t.Helper()
 
-	return buildSettlementPaying(t, c, []*wire.TxOut{
+	contractPkScript, err := c.PkScript()
+	if err != nil {
+		t.Fatalf("PkScript: %v", err)
+	}
+
+	input, changePkScript := p.spendableVtxo(t)
+
+	change := input.Amount - c.Terms.PayoutSats
+	if change <= int64(stack.dust) {
+		t.Fatalf("boarded %d sats: not enough to fund %d and leave change above dust %d",
+			input.Amount, c.Terms.PayoutSats, stack.dust)
+	}
+
+	arkTx, checkpoints, err := offchain.BuildTxs(
+		[]offchain.VtxoInput{input},
+		[]*wire.TxOut{
+			{Value: c.Terms.PayoutSats, PkScript: contractPkScript},
+			{Value: change, PkScript: changePkScript},
+		},
+		checkpointTapscript(t),
+	)
+	if err != nil {
+		t.Fatalf("building the funding transaction: %v", err)
+	}
+
+	txid, err := p.submitToArkd(t, arkTx, checkpoints)
+	if err != nil {
+		t.Fatalf("arkd refused the funding transaction: %v", err)
+	}
+
+	hash, err := chainhashFrom(txid)
+	if err != nil {
+		t.Fatalf("funding txid %q: %v", txid, err)
+	}
+	return wire.OutPoint{Hash: *hash, Index: 0}
+}
+
+func settlementSpending(
+	t *testing.T, c covenant.Contract, outpoint wire.OutPoint, short, long int64,
+) (*psbt.Packet, []*psbt.Packet) {
+	t.Helper()
+
+	return settlementPaying(t, c, outpoint, []*wire.TxOut{
 		{Value: short, PkScript: c.Terms.ShortLockScript},
 		{Value: long, PkScript: c.Terms.LongLockScript},
 	})
 }
 
-// buildSettlementPaying assembles the transaction that spends the contract VTXO
-// through the settlement leaf, with the emulator packet attached.
-func buildSettlementPaying(
-	t *testing.T, c covenant.Contract, outputs []*wire.TxOut,
+// settlementPaying builds the transaction that spends the contract VTXO through
+// the settlement leaf, with the covenant and both oracle messages in the
+// emulator packet.
+func settlementPaying(
+	t *testing.T, c covenant.Contract, outpoint wire.OutPoint, outputs []*wire.TxOut,
 ) (*psbt.Packet, []*psbt.Packet) {
 	t.Helper()
 
-	funding := fundingTx(t, c)
-	input := contractInput(t, c, funding)
+	input := contractInput(t, c, outpoint, c.Terms.PayoutSats)
 
 	arkTx, checkpoints, err := offchain.BuildTxs(
 		[]offchain.VtxoInput{input}, outputs, checkpointTapscript(t),
 	)
 	if err != nil {
 		t.Fatalf("building the settlement transaction: %v", err)
-	}
-
-	// The emulator resolves the input's previous ark transaction from this
-	// field, not from a chain it can query.
-	if err := txutils.SetArkPsbtField(arkTx, 0, arkade.PrevArkTxField, *funding); err != nil {
-		t.Fatalf("attaching the previous ark tx: %v", err)
 	}
 
 	settlementScript, err := c.SettlementScript()
@@ -148,27 +179,10 @@ func buildSettlementPaying(
 	return arkTx, checkpoints
 }
 
-// fundingTx is the transaction that created the contract VTXO. The emulator
-// only reads it to resolve the input being spent, so it does not have to exist
-// on any chain — but it does have to hold exactly PayoutSats, which is what the
-// covenant checks.
-func fundingTx(t *testing.T, c covenant.Contract) *wire.MsgTx {
-	t.Helper()
-
-	pkScript, err := c.PkScript()
-	if err != nil {
-		t.Fatalf("PkScript: %v", err)
-	}
-
-	return &wire.MsgTx{
-		Version: 2,
-		TxIn:    []*wire.TxIn{{PreviousOutPoint: wire.OutPoint{Index: 0}}},
-		TxOut:   []*wire.TxOut{{Value: c.Terms.PayoutSats, PkScript: pkScript}},
-	}
-}
-
 // contractInput points at the contract VTXO and reveals the settlement leaf.
-func contractInput(t *testing.T, c covenant.Contract, funding *wire.MsgTx) offchain.VtxoInput {
+func contractInput(
+	t *testing.T, c covenant.Contract, outpoint wire.OutPoint, amount int64,
+) offchain.VtxoInput {
 	t.Helper()
 
 	proof, err := c.Tapscript(covenant.LeafSettlement)
@@ -191,12 +205,12 @@ func contractInput(t *testing.T, c covenant.Contract, funding *wire.MsgTx) offch
 	}
 
 	return offchain.VtxoInput{
-		Outpoint: &wire.OutPoint{Hash: funding.TxHash(), Index: 0},
+		Outpoint: &outpoint,
 		Tapscript: &waddrmgr.Tapscript{
 			ControlBlock:   control,
 			RevealedScript: proof.Script,
 		},
-		Amount:             funding.TxOut[0].Value,
+		Amount:             amount,
 		RevealedTapscripts: revealed,
 	}
 }

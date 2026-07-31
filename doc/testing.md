@@ -86,15 +86,19 @@ What it pins:
 - The running arkd's decoder parses every leaf
 - Both payouts clear the operator's dust threshold, which is a runtime value
 - Every control block verifies against the address that would be funded
-- **The emulator signs a real settlement**: a transaction built by `offchain.BuildTxs`, carrying the
-  checkpoint, the extension OP_RETURN and the anchor, with the covenant and the two oracle messages
-  in the emulator packet. The emulator recomputes the tweak, finds it in the leaf, executes the
-  script and signs — or does not
+- **A settlement on a contract VTXO that really exists**, end to end: board from the stack's own
+  faucet, settle into a VTXO, spend it into the contract address with exactly `payoutSats`, then
+  settle the contract
 - It refuses a sat moved to the short, and a redirected payout
 
-The settlement tests do not need a wallet or a faucet. The emulator resolves the input it is
-spending from the `PrevArkTxField` on the PSBT, so the funding transaction is synthesised — it has
-to hold exactly `payoutSats`, which is what the covenant checks anyway.
+**The emulator is the entry point, not arkd.** A covenant spend goes to the emulator, which parses
+the emulator packet, matches the tweaked key against the leaf, executes the script, signs, and
+forwards to arkd itself when it holds the last signature (`internal/application/tx.go:146`). So one
+`SubmitTx` covers the covenant, arkd's value conservation, its output validation and its signature
+checks. A transaction with no covenant on its input — the funding one — goes straight to arkd.
+
+That is also why a synthesised funding transaction is not enough: the emulator would execute the
+script against it happily and then arkd would reject a VTXO that never existed.
 
 ## Files
 
@@ -106,4 +110,5 @@ to hold exactly `payoutSats`, which is what the covenant checks anyway.
 | `covenant/vm.go` | `ArkPrevOutFetcher`, the synthetic spending transaction, and `Run` |
 | `integration/stack.go` | Endpoints and the wait-for-ready loop |
 | `integration/main_test.go` | Reads both services' `GetInfo` into the fixture |
-| `integration/settlement_test.go` | Builds a real settlement and submits it to the emulator |
+| `integration/wallet_test.go` | A party with a real wallet: board, settle, sign, submit |
+| `integration/settlement_test.go` | Funds the contract and settles it through the stack |
