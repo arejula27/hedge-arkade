@@ -41,13 +41,36 @@ signature.
 | One party vanishes and blocks the exit | The tx is already signed; the other broadcasts it alone |
 | One party vanishes after the exit | In the 2-of-3, the other party + the service move the funds |
 
-**Consequence**: once the funds land in the 2-of-3 the covenant no longer settles. The split is
-resolved by the vault's signers — by agreement, or with the service arbitrating on the oracle
-price. This is inherent to any exit: an exit always drops the covenant.
+## After the exit: arbitration
 
-Known and accepted risk: collusion between the service and one party inside the 2-of-3. Mitigation:
-the service signs deterministically from the latest oracle-signed price, never at manual
-discretion, and every signature is accompanied by the oracle's as publicly auditable evidence.
+Once the funds land in the 2-of-3 the covenant no longer settles. This is inherent to any exit —
+an exit always drops the covenant — so something else has to decide the split.
+
+**The service arbitrates and the parties only sign.** It takes an oracle-signed price, applies the
+payout rule, and builds the transaction; either party plus the service is two of three, so neither
+can be held hostage by the other. The service has no discretion in it: without a valid oracle
+signature it cannot produce a proposal at all, and the message and signature travel with the
+proposal so the split can be checked before signing and audited afterwards.
+
+A party must run `Verify` before signing. It recomputes the whole proposal from the oracle's own
+bytes and requires the transaction to match to the sat — amounts, recipients, output count. A
+signature that checks nothing protects nothing, and it is what catches a service that pays at one
+price while showing another as evidence.
+
+This is a **separate mechanism from the covenant**, not a continuation of it. No script and no VM
+are in this path; the 2-of-3 is plain Bitcoin and the rule is ordinary arithmetic in
+`covenant/arbitration.go`. Two things differ from the covenant and both are the price of exiting:
+
+- **No timing gate.** The covenant settles only at maturity or at a liquidation boundary. An exit
+  can happen at any moment, so the arbitration settles at whatever the price is when it runs.
+- **Fees.** The exit cost sats, so there is less to share out than `payoutSats`. The shortfall is
+  taken from both sides in proportion to what each was owed, so neither pays for the other's
+  decision to exit. The rounding remainder goes to the long, deterministically, so two people
+  computing the split get the same number.
+
+Known and accepted risk: collusion between the service and one party inside the 2-of-3. The
+mitigation is that the service signs only what the oracle's signature supports, and the other party
+can always show what the honest split was.
 
 ## What is built
 

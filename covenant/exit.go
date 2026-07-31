@@ -87,6 +87,24 @@ func NewSweep(short, long, service *btcec.PublicKey) (*Sweep, error) {
 	}, nil
 }
 
+// sighash is the digest the sweep's signers sign: a taproot script-path
+// signature hash over the 2-of-3 leaf. amount is what the sweep output holds,
+// since taproot signs over input values.
+func (s *Sweep) sighash(tx *wire.MsgTx, amount int64) ([]byte, error) {
+	if tx == nil || len(tx.TxIn) != 1 {
+		return nil, fmt.Errorf("a sweep spend must have exactly one input")
+	}
+
+	prevOuts := txscript.NewCannedPrevOutputFetcher(s.PkScript, amount)
+
+	return txscript.CalcTapscriptSignaturehash(
+		txscript.NewTxSigHashes(tx, prevOuts),
+		txscript.SigHashDefault,
+		tx, 0, prevOuts,
+		txscript.NewBaseTapLeaf(s.Leaf),
+	)
+}
+
 // Witness assembles the witness that spends the 2-of-3, given signatures keyed
 // by x-only pubkey. A key with no signature contributes an empty element, which
 // CHECKSIGADD reads as a zero rather than a failure — that is how a threshold
