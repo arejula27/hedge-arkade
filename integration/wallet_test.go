@@ -39,9 +39,14 @@ const walletPassword = "password"
 
 // party is one side of the contract with a real Arkade wallet behind it.
 type party struct {
-	sdk      arksdk.ArkClient
-	wallet   wallet.WalletService
-	pubKey   *btcec.PublicKey
+	sdk    arksdk.ArkClient
+	wallet wallet.WalletService
+	pubKey *btcec.PublicKey
+	// privKey is the same key the wallet holds. Renewal signs an intent proof
+	// that mixes the party's own VTXO with the contract's, and the contract's
+	// half cannot go through the wallet — so both halves are signed with raw
+	// keys instead.
+	privKey  *btcec.PrivateKey
 	arkd     arkclient.TransportClient
 	indexer  indexer.Indexer
 	explorer explorer.Explorer
@@ -109,7 +114,7 @@ func newParty(t *testing.T) *party {
 	}
 
 	return &party{
-		sdk: sdk, wallet: walletSvc, pubKey: privKey.PubKey(),
+		sdk: sdk, wallet: walletSvc, pubKey: privKey.PubKey(), privKey: privKey,
 		arkd: arkd, indexer: indexerSvc, explorer: explorerSvc,
 	}
 }

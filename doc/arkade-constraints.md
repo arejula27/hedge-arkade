@@ -59,31 +59,68 @@ intent, and arkd drops the intent for containing a spent input.
 expiry resets. This is a property of a chain with no automatic mining, not a defect in arkd or the
 SDK.
 
-### The design renewal would take
+### The design renewal takes
 
-Leaf 2 is `short + long + arkd`: a forfeit closure, which is exactly what a batch swap needs to
-forfeit the old VTXO. So a collaborative renewal is a batch swap that spends the contract VTXO
-through leaf 2 and recreates it at the same contract address, for the same amount.
+[Intent delegation](https://docs.arkadeos.com/arkd/components/intent-delegation) gives the shape,
+and our tree already has it. Step 3 of that page is the load-bearing detail: the BIP322 intent proof
+uses the **exit path**, not a collaborative one. So neither the operator nor a delegate is committed
+by it.
 
-Both parties are present for that anyway, which is convenient, because **renewal changes the
-outpoint and therefore invalidates the pre-signed exit package**. It has to be re-signed for the new
-outpoint in the same ceremony. Arkade supports delegating renewal via presigned intents without
-giving up custody ([intent delegation](https://docs.arkadeos.com/arkd/components/intent-delegation)),
-which would fit the service, but the delegated forfeit is signed `SIGHASH_ALL | ANYONECANPAY` on a
-path the delegate is part of — worth checking against our leaf 2.
+| Piece | Arkade's path | Our leaf | Signed by |
+|---|---|---|---|
+| BIP322 intent proof | A+CSV (exit) | **leaf 3** | short + long |
+| Forfeit tx (`ANYONECANPAY`) | A+B+S | **leaf 2** | short + long, operator completes |
 
-Renewing the *contract* VTXO is the part that is not built. The SDK's `Settle` only swaps VTXOs the
-wallet owns, and its exported `RegisterIntent` signs the intent proof with the wallet's key, whereas
-a contract VTXO's proof has to be signed by the parties on leaf 2. Driving the rest — tree nonces,
-tree signatures, forfeits — is `handleBatchEvents`, which is unexported. So contract renewal means
-reimplementing batch participation with multi-party signing.
+Renewal needs no new leaf, and **the service must not be added to one**. In Arkade's model the
+delegate occupies the `B` slot because there is one user and a third-party delegate; here `B` is
+already the counterparty. A fourth key would give the service a veto over renewal — the power it is
+denied everywhere else — and buys nothing, because the presigned intent and forfeit already pin what
+it may submit.
+
+The proof spends a leaf with a CSV, so it carries a BIP68 sequence: `intent.Verify` runs the proof
+through btcd's script engine (`intent/proof.go:52`), which checks the sequence against the script.
+How old the VTXO is belongs to consensus, which never sees this transaction.
+
+**Renewal changes the outpoint and therefore invalidates the pre-signed exit package.** Even with
+`ANYONECANPAY`, BIP341 still commits to the spent input's outpoint, and the new outpoint depends on
+the whole batch, so it cannot be pre-signed. Two consequences: a presigned intent covers exactly one
+renewal, not a chain; and both parties have to re-sign the exit for the new outpoint afterwards.
+Delegation therefore removes the need to be online *during the interactive batch*, not the need to
+appear once per expiry window.
+
+Arkade's own docs put a limit on how much delegation buys: delegated renewals "keep your VTXOs in
+the preconfirmation state and do not achieve Bitcoin finality". Prefiguring the forfeit means
+committing to give up the old VTXO before seeing the tree that creates the new one. So the delegated
+path is an option, not a replacement for the bilateral one.
+
+### Measured: what arkd accepts, and what it charges
+
+Registering an intent for a real contract VTXO on the live stack (`integration/renewal_test.go`):
+
+| Question | Answer |
+|---|---|
+| Intent proved on leaf 3, signed by short + long only | **accepted** |
+| Intent proved on leaf 2 | also accepted |
+| Intent signed by one party alone | rejected, `missing signature for <key>` |
+| Cost | a fee, quoted by `EstimateIntentFee` |
+
+The fee is the finding that changes the design. arkd quoted 200,000 sats for a one-input renewal of
+a 20,000,000 sat contract, and 495,000 once the fee-paying coin and its change were added — it is
+priced from the intent it is charged on, so the estimate is a fixed point rather than a lookup.
+
+**The fee cannot come out of the contract.** The covenant pins the settlement input at exactly
+`payoutSats`, so a contract that had paid one renewal fee could never settle through leaf 1 again.
+The renewal intent therefore carries a second input — somebody's own coin — that pays the fee and
+takes its change back, leaving the contract output at exactly `payoutSats`. This is the natural
+place for the service to earn its keep as the delegate.
 
 Still unresolved, and it gates production:
 
 - Whether `maturityTime` must be capped at the batch expiry window
-- Whether the service can drive renewal, and what signatures that needs from both parties
-- Re-signing the exit package on every renewal, and the liveness requirement that puts on both
-  parties
+- Who pays the renewal fee in production, and how that is priced into the contract
+- Re-signing the exit package on every renewal, and the gap between the batch confirming and both
+  signatures arriving, during which neither party can exit without the other
+- Why Arkade's model puts the delegate in the forfeit path — convention, or something arkd enforces
 
 ---
 
