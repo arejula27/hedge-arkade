@@ -27,6 +27,16 @@ type Spend struct {
 	// ExtraInputs adds inputs beyond the contract VTXO, for checking that the
 	// covenant pins the transaction's shape.
 	ExtraInputs int
+
+	// InputSats is what the contract VTXO holds. Zero means defaultInputSats.
+	InputSats int64
+}
+
+func (s Spend) inputSats() int64 {
+	if s.InputSats == 0 {
+		return defaultInputSats
+	}
+	return s.InputSats
 }
 
 // Run executes an Arkade Script against the VM with the given witness stack and
@@ -35,7 +45,8 @@ type Spend struct {
 // The stack is bottom element first.
 func Run(script []byte, stack [][]byte, spend Spend) error {
 	vm, err := arkade.NewEngine(
-		script, spendingTx(spend), 0, nil, nil, inputAmount, newPrevOutFetcher(),
+		script, spendingTx(spend), 0, nil, nil, spend.inputSats(),
+		newPrevOutFetcher(spend.inputSats()),
 	)
 	if err != nil {
 		return err
@@ -55,10 +66,10 @@ func Run(script []byte, stack [][]byte, spend Spend) error {
 	return vm.Execute()
 }
 
-// inputAmount is the value of the VTXO being spent. It is deliberately larger
-// than any payout the tests exercise, so a failure is never an accident of the
-// input being too small to fund the outputs.
-const inputAmount = 10_000_000_000
+// defaultInputSats is what the contract VTXO holds when a Spend does not say.
+// The covenant requires the input to equal PayoutSats exactly, so this matches
+// the standard terms; a case with other terms sets Spend.InputSats.
+const defaultInputSats = 20_000_000
 
 var fundingOutpoint = wire.OutPoint{Hash: chainhash.Hash{}, Index: 0}
 
@@ -97,8 +108,8 @@ type prevOutFetcher struct {
 	arkTx *wire.MsgTx
 }
 
-func newPrevOutFetcher() *prevOutFetcher {
-	prevOut := &wire.TxOut{Value: inputAmount, PkScript: P2TR(make([]byte, 32))}
+func newPrevOutFetcher(inputSats int64) *prevOutFetcher {
+	prevOut := &wire.TxOut{Value: inputSats, PkScript: P2TR(make([]byte, 32))}
 
 	return &prevOutFetcher{
 		PrevOutputFetcher: txscript.NewMultiPrevOutFetcher(

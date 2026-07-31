@@ -13,6 +13,11 @@ var (
 	shortScript = P2TR(bytes.Repeat([]byte{0xaa}, 32))
 	longScript  = P2TR(bytes.Repeat([]byte{0xbb}, 32))
 	thiefScript = P2TR(bytes.Repeat([]byte{0xcc}, 32))
+
+	// The two zero-value outputs every Arkade transaction carries: the
+	// extension OP_RETURN holding the emulator packet, and the P2A anchor.
+	extensionOpReturn = []byte{0x6a, 0x04, 0x41, 0x52, 0x4b, 0x00}
+	anchorScript      = []byte{0x51, 0x02, 0x4e, 0x73}
 )
 
 const (
@@ -101,11 +106,20 @@ func script(t *testing.T, terms Terms) []byte {
 }
 
 // settlement builds a well-formed spend paying the two configured recipients.
+// The input defaults to the standard terms' PayoutSats, which is what the
+// covenant now requires the VTXO to hold.
 func settlement(short, long int64) Spend {
 	return Spend{Outputs: []Payout{
 		{Sats: short, LockScript: shortScript},
 		{Sats: long, LockScript: longScript},
 	}}
+}
+
+// fundedWith is settlement for terms whose PayoutSats is not the standard one.
+func fundedWith(input, short, long int64) Spend {
+	s := settlement(short, long)
+	s.InputSats = input
+	return s
 }
 
 // The one source of expected values. Every other test in this file derives from
@@ -148,25 +162,28 @@ var accepted = []settlementCase{
 	},
 	{
 		// The long is wiped out but still gets a dust output rather than none.
+		// The short's raw payout is the whole 20,000,000; the cap holds it at
+		// PayoutSats - Dust so the two still sum to exactly PayoutSats.
 		name:  "at the low boundary the long is left with dust",
 		terms: standard,
 		price: 5_000_000, // $50,000
-		short: 20_000_000, long: Dust,
+		short: 19_998_668, long: Dust,
 	},
 	{
 		name:  "far below the low boundary settles the same as at it",
 		terms: standard,
 		price: 1,
-		short: 20_000_000, long: Dust,
+		short: 19_998_668, long: Dust,
 	},
 	{
-		// 1e14/5_000_001 leaves the long 4 sats, which the dust floor raises to
-		// Dust. The two payouts therefore sum to more than PayoutSats — that is
-		// AnyHedge's behaviour, and the input covers it.
+		// 1e14/5_000_001 leaves the long 4 sats, below dust, so the cap on the
+		// short applies here too. AnyHedge would pay the short 19,999,996 and
+		// the long Dust, summing to more than PayoutSats; Arkade conserves
+		// value exactly, so the difference comes off the short.
 		name:  "one cent inside the low boundary is not clamped",
 		terms: standard,
 		price: 5_000_001,
-		short: 19_999_996, long: Dust,
+		short: 19_998_668, long: Dust,
 	},
 	{
 		// 100_000_000 / 3 = 33_333_333.33…  OP_DIV truncates, and the third of a
@@ -216,11 +233,80 @@ var accepted = []settlementCase{
 	},
 }
 
+// spend is the settlement a case expects, funded as the covenant requires.
+func (tc settlementCase) spend() Spend {
+	return fundedWith(tc.terms.PayoutSats, tc.short, tc.long)
+}
+
 func TestSettlementAccepts(t *testing.T) {
 	for _, tc := range accepted {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := Run(script(t, tc.terms), maturedAt(t, tc.price), settlement(tc.short, tc.long)); err != nil {
+			if err := Run(script(t, tc.terms), maturedAt(t, tc.price), tc.spend()); err != nil {
 				t.Errorf("VM rejected a correct settlement: %v", err)
+			}
+		})
+	}
+}
+
+// The property the whole redesign exists for: Arkade conserves value exactly,
+// so the two payouts must sum to the input and never to more.
+func TestPayoutsAlwaysSumToTheInput(t *testing.T) {
+	for _, tc := range accepted {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.short + tc.long; got != tc.terms.PayoutSats {
+				t.Errorf("payouts sum to %d, want %d", got, tc.terms.PayoutSats)
+			}
+			if tc.short < Dust || tc.long < Dust {
+				t.Errorf("a payout is below dust: short %d, long %d", tc.short, tc.long)
+			}
+		})
+	}
+}
+
+// A real Arkade settlement transaction carries the emulator packet as an
+// extension OP_RETURN and a P2A anchor besides the two payouts. Both are
+// worth zero, and the covenant must not care that they are there.
+func TestSettlementAcceptsTheRealArkadeTransactionShape(t *testing.T) {
+	spend := settlement(10_000_000, 10_000_000)
+	spend.Outputs = append(spend.Outputs,
+		Payout{Sats: 0, LockScript: extensionOpReturn},
+		Payout{Sats: 0, LockScript: anchorScript},
+	)
+
+	if err := Run(script(t, standard), maturedAt(t, midPrice), spend); err != nil {
+		t.Fatalf("VM rejected the shape every Arkade settlement has: %v", err)
+	}
+}
+
+// With the input pinned and both payouts pinned, a third output carrying value
+// would pay out more than the transaction takes in. No such transaction can
+// exist, so the covenant does not need to count outputs to prevent it — but the
+// premise it relies on is worth pinning.
+func TestNoValueIsLeftForAThirdOutput(t *testing.T) {
+	for _, tc := range accepted {
+		t.Run(tc.name, func(t *testing.T) {
+			if surplus := tc.terms.PayoutSats - tc.short - tc.long; surplus != 0 {
+				t.Errorf("%d sats of the input are unaccounted for", surplus)
+			}
+		})
+	}
+}
+
+// The VTXO must hold exactly what the contract was funded with. Anything else
+// and the settlement cannot balance.
+func TestSettlementPinsTheInputAmount(t *testing.T) {
+	s := script(t, standard)
+
+	for name, input := range map[string]int64{
+		"one sat under":  standard.PayoutSats - 1,
+		"one sat over":   standard.PayoutSats + 1,
+		"overfunded":     standard.PayoutSats + 5_000_000,
+		"far overfunded": 10_000_000_000,
+	} {
+		t.Run(name, func(t *testing.T) {
+			spend := fundedWith(input, 10_000_000, 10_000_000)
+			if err := Run(s, maturedAt(t, midPrice), spend); err == nil {
+				t.Error("VM settled a VTXO holding the wrong amount")
 			}
 		})
 	}
@@ -246,7 +332,8 @@ func TestSettlementIsExactToTheSat(t *testing.T) {
 				{"a sat moved from long to short", tc.short + 1, tc.long - 1},
 				{"a sat moved from short to long", tc.short - 1, tc.long + 1},
 			} {
-				if err := Run(s, maturedAt(t, tc.price), settlement(nudge.short, nudge.long)); err == nil {
+				spend := fundedWith(tc.terms.PayoutSats, nudge.short, nudge.long)
+				if err := Run(s, maturedAt(t, tc.price), spend); err == nil {
 					t.Errorf("VM accepted %s", nudge.what)
 				}
 			}
@@ -296,14 +383,6 @@ func TestSettlementPinsTransactionShape(t *testing.T) {
 	const p, short, long = 10_000_000, 10_000_000, 10_000_000
 	s := script(t, standard)
 
-	t.Run("a third output", func(t *testing.T) {
-		spend := settlement(short, long)
-		spend.Outputs = append(spend.Outputs, Payout{Sats: 1_000, LockScript: thiefScript})
-		if err := Run(s, maturedAt(t, p), spend); err == nil {
-			t.Error("VM accepted a third output")
-		}
-	})
-
 	t.Run("only one output", func(t *testing.T) {
 		spend := Spend{Outputs: []Payout{{Sats: short, LockScript: shortScript}}}
 		if err := Run(s, maturedAt(t, p), spend); err == nil {
@@ -316,6 +395,22 @@ func TestSettlementPinsTransactionShape(t *testing.T) {
 		spend.ExtraInputs = 1
 		if err := Run(s, maturedAt(t, p), spend); err == nil {
 			t.Error("VM accepted an extra input")
+		}
+	})
+
+	// The covenant does not count outputs, so it accepts a third one in
+	// isolation. The transaction is still impossible: paying 20,000,000 into
+	// two outputs and 1,000 into a third takes more out than the pinned input
+	// puts in. Asserting the VM's actual behaviour keeps the reasoning honest —
+	// the guarantee is arithmetic, not a shape check.
+	t.Run("a third output carrying value", func(t *testing.T) {
+		spend := settlement(short, long)
+		spend.Outputs = append(spend.Outputs, Payout{Sats: 1_000, LockScript: thiefScript})
+		if err := Run(s, maturedAt(t, p), spend); err != nil {
+			t.Errorf("expected the covenant to be indifferent, got %v", err)
+		}
+		if standard.PayoutSats-short-long != 0 {
+			t.Error("the input would have had room for that output")
 		}
 	})
 }
@@ -407,7 +502,7 @@ func TestEveryParameterChangesTheScript(t *testing.T) {
 // The client verifies a contract by rebuilding it and comparing bytes, so the
 // build must be deterministic and stable. When this fails on purpose, update the
 // constant — and remember the TypeScript verifier has to move with it.
-const standardScriptHex = "d4519dd5529d00d1519d20aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa8851d1519d20bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb88766ba8204f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aacc69766ba8204f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aacc696c6c7600587fd80480234b6b9f6958587fd87600a06951937858587fd89d7600587fd8760400d2496ba2697c60587fd87600a06904002d3101a303404b4ca4766b7603404b4c9c7c04002d31019c9b7c0480234b6ba29b696c0600407a10f35a7c960094023405a47604002d31017c94023405a451cf9d00cf9c"
+const standardScriptHex = "d4519dcdc904002d31019d00d1519d20aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa8851d1519d20bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb88766ba8204f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aacc69766ba8204f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aacc696c6c7600587fd80480234b6b9f6958587fd87600a06951937858587fd89d7600587fd8760400d2496ba2697c60587fd87600a06904002d3101a303404b4ca4766b7603404b4c9c7c04002d31019c9b7c0480234b6ba29b696c0600407a10f35a7c960094023405a404cc273101a37604002d31017c9451cf9d00cf9c"
 
 func TestSettlementScriptIsStable(t *testing.T) {
 	got := hex.EncodeToString(script(t, standard))

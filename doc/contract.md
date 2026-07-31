@@ -43,33 +43,50 @@ Arkade adds to that list:
 
 ## Formulas
 
-Taken from `contract.cash` unchanged:
-
 ```
 clampedPrice = max(min(oraclePrice, highLiquidationPrice), lowLiquidationPrice)
-shortSats    = max(DUST, (nominalUnitsXSatsPerBch / clampedPrice) - satsForNominalUnitsAtHighLiquidation)
-longSats     = max(DUST, payoutSats - shortSats)
+shortSats    = min(payoutSats - DUST, max(DUST, nominalUnitsXSatsPerBtc/clampedPrice - satsForNominalUnitsAtHighLiquidation))
+longSats     = payoutSats - shortSats
 ```
 
 Division truncates, and truncation costs the short side the fraction.
 
-**Dust is a floor, not an omission.** AnyHedge pays `max(DUST, …)` and always produces exactly two
-outputs. This differs from `stability_vault.ark`, which drops an output below 330 sats — we follow
-AnyHedge. `DUST` is 1332 on BCH; the Bitcoin value has to be set for our own relay rules.
+**Dust is a floor, not an omission.** Both sides always get an output, never fewer than `DUST`.
+This differs from `stability_vault.ark`, which drops an output below 330 sats. `DUST` is 1332 on
+BCH; the Bitcoin value has to be set for our own relay rules.
+
+**The cap is where this leaves AnyHedge**, and Arkade forces it. AnyHedge floors both sides
+independently — `longSats = max(DUST, payoutSats - shortSats)` — so at a liquidation the two
+payouts can sum to more than `payoutSats`, with the difference coming out of the miner fee the
+funder included. Arkade has no miner fee to draw on: arkd rebuilds every offchain transaction with
+`offchain.BuildTxs`, which refuses an input amount that differs from the output amount
+(`offchain/tx.go:64`), then compares txids (`service.go:979`). A settlement that does not balance
+cannot be submitted. Capping the short at `payoutSats - DUST` keeps the long its dust output and
+the sum exactly `payoutSats`; the difference — at most `DUST` — comes off the short instead of off
+a fee.
 
 **Outputs are exact.** Not `>=`:
 
 ```
-require(tx.inputs.length == 1);
-require(tx.outputs.length == 2);
-require(tx.outputs[0].value == shortSats);
-require(tx.outputs[0].lockingBytecode == shortLockScript);
-require(tx.outputs[1].value == longSats);
-require(tx.outputs[1].lockingBytecode == longLockScript);
+tx.inputs.length == 1
+tx.inputs[current].value == payoutSats
+tx.outputs[0].value == shortSats  &&  tx.outputs[0].scriptPubKey == shortLockScript
+tx.outputs[1].value == longSats   &&  tx.outputs[1].scriptPubKey == longLockScript
 ```
 
 Checking values without checking the lock scripts is a hole: the amounts would be right and the
 recipients arbitrary.
+
+**The output count is not checked**, though AnyHedge checks it. An Arkade transaction carries the
+emulator packet as an extension OP_RETURN and a P2A anchor besides the two payouts, so `== 2` would
+reject every real settlement. Arithmetic replaces it and is stronger: the input is pinned to
+`payoutSats`, the two payouts sum to `payoutSats`, and no transaction can pay out more than it
+takes in — so every other output is necessarily worth zero. That holds by conservation of value,
+not by arkd's cooperation.
+
+Pinning the input is also what makes overfunding harmless. A VTXO holding anything other than
+`payoutSats` cannot settle at all; it is unusable rather than exploitable, and it fails inside the
+covenant with a clear cause instead of inside arkd's rebuild.
 
 ---
 

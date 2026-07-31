@@ -10,6 +10,8 @@ The contract stays as close to `AnyHedge_v0_12` as Arkade allows.
 | `checkDataSig` | `OP_CHECKSIGFROMSTACK` |
 | P2SH, one script | Taproot, three leaves |
 | 4-byte ints throughout | BigNum, arbitrary precision |
+| `tx.outputs.length == 2` | Input pinned to `payoutSats`; the count is not checked |
+| `longSats = max(DUST, payoutSats - shortSats)` | Short capped at `payoutSats - DUST`, long is the remainder |
 
 **Forced differences** — Arkade leaves no choice:
 
@@ -17,6 +19,11 @@ The contract stays as close to `AnyHedge_v0_12` as Arkade allows.
 - Collaborative leaves must carry the operator pubkey
 - The covenant runs on the emulator, not on node consensus
 - Payouts land in VTXOs, so `shortLockScript`/`longLockScript` are Arkade scripts, not BCH P2PKH
+- **No miner fee to absorb the dust band.** AnyHedge's two payouts can sum to more than
+  `payoutSats`; the funder's fee allowance covers it. Arkade conserves value exactly, so the sum
+  has to be `payoutSats` and the short takes the cap. See contract.md
+- **The output count cannot be pinned.** An Arkade transaction carries the emulator packet and a
+  P2A anchor, so it never has exactly two outputs
 
 **Chosen differences** — where ours is better and we keep it:
 

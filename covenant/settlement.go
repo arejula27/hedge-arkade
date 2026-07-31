@@ -62,6 +62,11 @@ func (t Terms) validate() error {
 		return fmt.Errorf("nominal units must be positive, got %d", t.NominalUnitsXSatsPerBtc)
 	case t.PayoutSats <= 0:
 		return fmt.Errorf("payout must be positive, got %d sats", t.PayoutSats)
+	// Both sides are floored at Dust and the short is capped at PayoutSats-Dust.
+	// Below 2*Dust the cap falls under the floor and no split satisfies both.
+	case t.PayoutSats < 2*Dust:
+		return fmt.Errorf("payout %d sats cannot cover a dust output on each side (%d)",
+			t.PayoutSats, 2*Dust)
 	case t.LowLiquidationPrice <= 0:
 		return fmt.Errorf("low liquidation price must be positive, got %d", t.LowLiquidationPrice)
 	case t.HighLiquidationPrice <= t.LowLiquidationPrice:
@@ -113,6 +118,7 @@ func (t Terms) SettlementScript() ([]byte, error) {
 		"low":      t.LowLiquidationPrice,
 		"high":     t.HighLiquidationPrice,
 		"dust":     Dust,
+		"shortCap": t.PayoutSats - Dust,
 		"start":    t.StartTimestamp,
 		"maturity": t.MaturityTimestamp,
 	} {
@@ -127,13 +133,32 @@ func (t Terms) SettlementScript() ([]byte, error) {
 
 	// --- Transaction shape ---------------------------------------------------
 	//
-	// Exactly one input and two outputs. A second input would let a spender
-	// bring along value the covenant never accounted for.
+	// Exactly one input. A second would let a spender bring along value the
+	// covenant never accounted for.
+	//
+	// The output count is deliberately *not* checked. AnyHedge requires exactly
+	// two, which on BCH forces any surplus into the miner fee. An Arkade
+	// transaction cannot satisfy that: it carries the emulator packet as an
+	// extension OP_RETURN and a P2A anchor besides the two payouts.
+	//
+	// Arithmetic replaces the check, and is stronger. The input is pinned to
+	// payoutSats below and the two payouts sum to exactly payoutSats, so every
+	// remaining output must be worth zero — no transaction can pay out more
+	// than it takes in. That holds by conservation of value, without relying on
+	// arkd to reject the transaction.
 	b.AddOp(arkade.OP_INSPECTNUMINPUTS)
 	b.AddOp(arkade.OP_1)
 	b.AddOp(arkade.OP_NUMEQUALVERIFY)
-	b.AddOp(arkade.OP_INSPECTNUMOUTPUTS)
-	b.AddOp(arkade.OP_2)
+
+	// --- The VTXO holds exactly what the contract was funded with ------------
+	//
+	// Without this the covenant would settle a VTXO of any size, and the
+	// difference between it and payoutSats would be value the transaction has
+	// to place somewhere the covenant does not constrain. arkd would reject the
+	// result for not balancing; failing here says why.
+	b.AddOp(arkade.OP_PUSHCURRENTINPUTINDEX)
+	b.AddOp(arkade.OP_INSPECTINPUTVALUE)
+	b.AddData(consts["payout"])
 	b.AddOp(arkade.OP_NUMEQUALVERIFY)
 
 	// --- Recipients ----------------------------------------------------------
@@ -236,7 +261,16 @@ func (t Terms) SettlementScript() ([]byte, error) {
 
 	// --- Payouts -------------------------------------------------------------
 	//
-	// shortSats = max(DUST, nominal/clampedPrice - leverage)
+	// shortSats = min(payoutSats - DUST, max(DUST, nominal/clampedPrice - leverage))
+	// longSats  = payoutSats - shortSats
+	//
+	// AnyHedge floors both sides at DUST independently, which lets the two
+	// payouts sum to more than payoutSats. Arkade cannot express that: arkd
+	// rebuilds every offchain transaction with offchain.BuildTxs, which refuses
+	// an input amount that differs from the output amount, and compares txids.
+	// Capping the short at payoutSats - DUST leaves the long its dust output
+	// while keeping the sum exactly payoutSats, so the settlement always
+	// balances and no value is left over for a spender to claim.
 	//
 	// The division runs on the VM, and so must the multiplication that produces
 	// `nominal`: it overflows int64 for a large position, and BigNum is the only
@@ -247,15 +281,16 @@ func (t Terms) SettlementScript() ([]byte, error) {
 	b.AddData(consts["leverage"])
 	b.AddOp(arkade.OP_SUB)
 	b.AddData(consts["dust"])
-	b.AddOp(arkade.OP_MAX) // shortSats
+	b.AddOp(arkade.OP_MAX)
+	b.AddData(consts["shortCap"])
+	b.AddOp(arkade.OP_MIN) // shortSats
 
-	// longSats = max(DUST, payoutSats - shortSats)
+	// longSats is the remainder, never computed independently: two derivations
+	// can disagree by a truncated sat and leave the contract unspendable.
 	b.AddOp(arkade.OP_DUP)
 	b.AddData(consts["payout"])
 	b.AddOp(arkade.OP_SWAP)
-	b.AddOp(arkade.OP_SUB)
-	b.AddData(consts["dust"])
-	b.AddOp(arkade.OP_MAX) // shortSats longSats
+	b.AddOp(arkade.OP_SUB) // shortSats longSats
 
 	// Output 1 pays the long, exactly.
 	b.AddOp(arkade.OP_1)

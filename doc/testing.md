@@ -23,7 +23,9 @@ rather than a generous one.
 ## What is pinned
 
 - The clamp at both boundaries, one cent inside each, and far past them
-- The dust floor, including where the two payouts sum to more than `payoutSats`
+- The dust floor and the cap that keeps the two payouts summing to exactly `payoutSats`
+- The input amount, which must equal `payoutSats`: over, under, and far over
+- The four-output shape a real Arkade settlement has
 - Truncation direction, the leverage term, a nominal past what BCH's 4-byte ints could hold
 - Recipients: payouts redirected, swapped, sent to a non-taproot output
 - Shape: a third output, a missing output, an extra input

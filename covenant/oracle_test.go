@@ -85,7 +85,7 @@ func TestSettlementAcceptsMaturityAndLiquidation(t *testing.T) {
 			name:    "the price crossed the low boundary before maturity",
 			settle:  message{startTime + 3_600, baseSequence + 1, 4_000_000},
 			prev:    message{startTime + 3_540, baseSequence, midPrice},
-			outputs: settlement(20_000_000, Dust),
+			outputs: settlement(19_998_668, Dust),
 		},
 		{
 			name:    "the price crossed the high boundary before maturity",
@@ -97,7 +97,21 @@ func TestSettlementAcceptsMaturityAndLiquidation(t *testing.T) {
 			name:    "a liquidation exactly at the earliest allowed timestamp",
 			settle:  message{startTime, baseSequence + 1, 4_000_000},
 			prev:    message{startTime - 60, baseSequence, midPrice},
-			outputs: settlement(20_000_000, Dust),
+			outputs: settlement(19_998_668, Dust),
+		},
+		{
+			// Touching the boundary is the event, not passing it: the clamp maps
+			// the boundary to itself, so price == low liquidates.
+			name:    "the price landed exactly on the low boundary",
+			settle:  message{startTime + 3_600, baseSequence + 1, 5_000_000},
+			prev:    message{startTime + 3_540, baseSequence, midPrice},
+			outputs: settlement(19_998_668, Dust),
+		},
+		{
+			name:    "the price landed exactly on the high boundary",
+			settle:  message{startTime + 3_600, baseSequence + 1, 20_000_000},
+			prev:    message{startTime + 3_540, baseSequence, midPrice},
+			outputs: settlement(5_000_000, 15_000_000),
 		},
 	}
 
@@ -168,13 +182,29 @@ func TestSettlementRejectsIllegitimateOracleMessages(t *testing.T) {
 			name:    "a liquidation before the earliest allowed timestamp",
 			settle:  message{startTime - 1, baseSequence + 1, 4_000_000},
 			prev:    message{startTime - 61, baseSequence, midPrice},
-			outputs: settlement(20_000_000, Dust),
+			outputs: settlement(19_998_668, Dust),
+		},
+		{
+			// One cent above the low boundary, mid-contract. The clamp leaves it
+			// alone, so it is neither a liquidation nor a maturity — the closest
+			// a spender can get to cashing out early without the price having
+			// reached the line.
+			name:    "one cent inside the low boundary before maturity",
+			settle:  message{startTime + 3_600, baseSequence + 1, 5_000_001},
+			prev:    message{startTime + 3_540, baseSequence, midPrice},
+			outputs: settlement(19_998_668, Dust),
+		},
+		{
+			name:    "one cent inside the high boundary before maturity",
+			settle:  message{startTime + 3_600, baseSequence + 1, 19_999_999},
+			prev:    message{startTime + 3_540, baseSequence, midPrice},
+			outputs: settlement(5_000_000, 15_000_000),
 		},
 		{
 			name:    "a zero price",
 			settle:  message{maturityTime, baseSequence + 1, 0},
 			prev:    message{maturityTime - 60, baseSequence, midPrice},
-			outputs: settlement(20_000_000, Dust),
+			outputs: settlement(19_998_668, Dust),
 		},
 	}
 

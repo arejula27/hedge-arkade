@@ -35,8 +35,8 @@ Go 1.26.5 — the version `pkg/arkade` requires — plus Node 22 and `just`.
 
 ```
 clampedPrice = max(min(oraclePrice, highLiquidationPrice), lowLiquidationPrice)
-shortSats    = max(DUST, nominalUnitsXSatsPerBtc/clampedPrice - satsForNominalUnitsAtHighLiquidation)
-longSats     = max(DUST, payoutSats - shortSats)
+shortSats    = min(payoutSats - DUST, max(DUST, nominalUnitsXSatsPerBtc/clampedPrice - satsForNominalUnitsAtHighLiquidation))
+longSats     = payoutSats - shortSats
 ```
 
 Three taproot leaves: settlement (covenant), mutual redemption (both parties), and a CSV emergency

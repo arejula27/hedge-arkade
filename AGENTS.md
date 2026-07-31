@@ -71,9 +71,17 @@ all need real execution.
 - **The long's payout is the remainder.** `shortSats` is computed, `longSats = payoutSats -
   shortSats`. Never derive both sides independently — two computations can disagree by a truncated
   sat and leave the transaction unspendable
-- **The payouts do not have to sum to `payoutSats`.** The dust floor is `max(DUST, …)` on each
-  side, so a wiped-out side still gets a dust output and the total can exceed `payoutSats`. That is
-  AnyHedge's behaviour; the input covers it. Do not "fix" it into a conservation invariant
+- **The payouts sum to exactly `payoutSats`, and the input is pinned to it.** Arkade conserves
+  value: arkd rebuilds every offchain tx with `offchain.BuildTxs`, which rejects an input amount
+  differing from the output amount (`offchain/tx.go:64`), and compares txids. AnyHedge floors both
+  sides independently and lets the total exceed `payoutSats`, covering the difference from the
+  miner fee — there is no fee here. The short is capped at `payoutSats - DUST` instead. Do not
+  "restore" AnyHedge's independent floors
+- **The output count is deliberately not checked**, unlike AnyHedge. A real Arkade transaction has
+  four outputs: the two payouts, the extension OP_RETURN carrying the emulator packet, and the P2A
+  anchor. `numOutputs == 2` rejects every real settlement. What replaces it is arithmetic — input
+  pinned, payouts summing to it, so no other output can carry value without the transaction paying
+  out more than it takes in
 - **`OP_DIV` truncates**, and the truncated fraction stays with the long. Rounding up would pay the
   short out of collateral it is not owed
 - **Oracle message layout is fixed**: 24 bytes, 8-byte little-endian fields —

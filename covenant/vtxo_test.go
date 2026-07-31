@@ -522,7 +522,7 @@ func TestContractRejectsBadTerms(t *testing.T) {
 
 // The TypeScript verifier has to derive the same address from the same
 // parameters. This pins the Go side of that.
-const standardPkScriptHex = "51202e6d82139077e2d1dbb4fbd1e983162bec54a492a877457dc0e5d9101bed8810"
+const standardPkScriptHex = "5120ee919fb3d1154184097c2e4de25bdfd6bd8e412fe819751d35a62d44110b38c0"
 
 func TestPkScriptIsStable(t *testing.T) {
 	got, err := contract().PkScript()
