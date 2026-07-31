@@ -76,6 +76,18 @@ case "${1:-}" in
     mine)
         ( cd "$DIR" && node regtest.mjs mine "${2:-1}" )
         ;;
+    # minetx <rawtxhex> — mines a transaction directly into a block, skipping
+    # mempool policy.
+    #
+    # Unrolling broadcasts zero-fee v3 transactions that carry a P2A anchor and
+    # are meant to be paid for by a CPFP child. Building that child is SDK
+    # plumbing we do not own, and it is not what the exit tests are about, so
+    # they put the transaction straight in a block instead. Consensus rules
+    # still apply — generateblock validates what it includes.
+    minetx)
+        addr=$(bitcoin_cli getnewaddress)
+        bitcoin_cli generateblock "$addr" "[\"$2\"]"
+        ;;
     # testaccept <rawtxhex> — asks bitcoind why it would refuse a transaction.
     # Broadcasting only reports RPC error -26, so a rejection test that stopped
     # there could not tell the covenant's own refusal from a typo in the setup.
@@ -84,7 +96,7 @@ case "${1:-}" in
             testmempoolaccept "[\"$2\"]"
         ;;
     *)
-        echo "usage: $0 {up|down|clean|logs|faucet <addr> <btc>|mine [n]|testaccept <hex>}" >&2
+        echo "usage: $0 {up|down|clean|logs|faucet <addr> <btc>|mine [n]|minetx <hex>|testaccept <hex>}" >&2
         exit 64
         ;;
 esac

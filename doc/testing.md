@@ -109,9 +109,19 @@ What it pins:
   faucet, settle into a VTXO, spend it into the contract address with exactly `payoutSats`, then
   settle the contract
 - It refuses a sat moved to the short, and a redirected payout
-- **A unilateral exit that really leaves Arkade**: fund the contract address from the faucet,
-  pre-sign, watch bitcoind refuse it while the delay runs, mine past the delay, broadcast, and find
-  the money in the 2-of-3. Neither arkd nor the emulator is involved, which is the point
+- **Bilateral funding**: both parties post their own collateral from their own VTXOs in one
+  transaction, each signing only its own inputs, and the contract then settles — in from both
+  sides, out to both sides
+- Overfunding by a single sat: arkd accepts the VTXO, and the covenant then refuses every possible
+  settlement of it, because conservation of value forces the extra sat into one of the two payouts
+- **Mutual redemption**, leaf 2: a real contract closed early at an arbitrary split, and refused
+  when only one party signs
+- **A unilateral exit that really leaves Arkade**: pre-sign, watch bitcoind refuse it while the
+  delay runs, mine past the delay, broadcast, and find the money in the 2-of-3. Neither arkd nor
+  the emulator is involved, which is the point
+- **The unroll**, from a contract that is a genuine offchain VTXO: walk its chain down onto Bitcoin
+  a transaction at a time, then exit. This is the complete claim — funded through the operator,
+  recovered without it
 
 Rejections here are asserted on bitcoind's reason, not merely on failure: `sendrawtransaction`
 reports RPC error -26 for a covenant doing its job and for a typo in the setup alike, so
@@ -121,6 +131,13 @@ broadcast early, `Invalid Schnorr signature` for one rewritten after signing.
 The exit tests generate fresh party keys rather than using the fixed ones. They settle on a chain
 that survives between runs, and a leftover output at a shared contract address would make two runs
 read each other's state. The address is logged, so a failure is still traceable.
+
+Two things the unroll needs that are worth knowing. The batch commitment the chain hangs from sits
+unconfirmed in the mempool until a test mines it — `AUTOMINE_INTERVAL=0` — so the unroll confirms it
+before starting, or the tree transaction has no input to spend. And the unrolled transactions are
+zero-fee v3 with a P2A anchor, meant to be paid for by a CPFP child; building that child is SDK
+plumbing we do not own, so `scripts/regtest.sh minetx` puts each one straight into a block with
+`generateblock`. Consensus still validates them; only the fee policy is stepped around.
 
 **The emulator is the entry point, not arkd.** A covenant spend goes to the emulator, which parses
 the emulator packet, matches the tweaked key against the leaf, executes the script, signs, and
@@ -144,4 +161,7 @@ script against it happily and then arkd would reject a VTXO that never existed.
 | `integration/main_test.go` | Reads both services' `GetInfo` into the fixture |
 | `integration/wallet_test.go` | A party with a real wallet: board, settle, sign, submit |
 | `integration/settlement_test.go` | Funds the contract and settles it through the stack |
+| `integration/funding_test.go` | Bilateral funding, and what overfunding costs |
+| `integration/redemption_test.go` | Leaf 2, and signing with keys no wallet holds |
 | `integration/exit_test.go` | Exits the contract onto the chain, with no service involved |
+| `integration/unroll_test.go` | The whole thing: offchain VTXO to swept onchain output |
