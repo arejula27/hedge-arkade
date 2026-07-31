@@ -299,7 +299,7 @@ func TestTheServiceAndEitherPartyCanArbitrate(t *testing.T) {
 			if err != nil {
 				t.Fatalf("SignArbitration: %v", err)
 			}
-			sigs[xOnlyHex(key.PubKey())] = signature
+			sigs[XOnlyHex(key.PubKey())] = signature
 		}
 
 		signed, err := FinalizeArbitration(a, s, sigs)

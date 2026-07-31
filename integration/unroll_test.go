@@ -85,7 +85,7 @@ func unroll(t *testing.T, p *party, outpoint wire.OutPoint) int {
 func TestAPartyCanUnrollAndExitWithoutTheOperator(t *testing.T) {
 	requireBlockDelay(t)
 
-	c, short, long, sweep := exitContract(t)
+	c, parties, sweep := exitContract(t)
 
 	p := newParty(t)
 	p.fund(t, boardedSats)
@@ -95,7 +95,7 @@ func TestAPartyCanUnrollAndExitWithoutTheOperator(t *testing.T) {
 
 	// Pre-signed at funding, while the operator is still cooperating.
 	pkg, err := c.PreSignExit(
-		short, long, outpoint, c.Terms.PayoutSats, exitFeeSats, sweep.PkScript,
+		parties.short, parties.long, outpoint, c.Terms.PayoutSats, exitFeeSats, sweep.PkScript,
 	)
 	if err != nil {
 		t.Fatalf("PreSignExit: %v", err)

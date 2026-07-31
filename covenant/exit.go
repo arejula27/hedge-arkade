@@ -125,7 +125,7 @@ func (s *Sweep) Witness(sigs map[string][]byte) (wire.TxWitness, error) {
 		if len(use) == SweepThreshold {
 			break
 		}
-		if sig := sigs[xOnlyHex(key)]; len(sig) > 0 {
+		if sig := sigs[XOnlyHex(key)]; len(sig) > 0 {
 			use[i] = sig
 		}
 	}
@@ -320,8 +320,8 @@ func (c Contract) Finalize(pkg *ExitPackage) (*wire.MsgTx, error) {
 	// ark-lib orders the signatures for us — reverse of the pubkey order, which
 	// is what the script's CHECKSIGVERIFY chain consumes.
 	witness, err := exit.Witness(proof.ControlBlock, map[string][]byte{
-		xOnlyHex(c.Keys.Short): pkg.ShortSig,
-		xOnlyHex(c.Keys.Long):  pkg.LongSig,
+		XOnlyHex(c.Keys.Short): pkg.ShortSig,
+		XOnlyHex(c.Keys.Long):  pkg.LongSig,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("building the exit witness: %w", err)
@@ -332,6 +332,9 @@ func (c Contract) Finalize(pkg *ExitPackage) (*wire.MsgTx, error) {
 	return signed, nil
 }
 
-func xOnlyHex(key *btcec.PublicKey) string {
+// XOnlyHex is how a public key is named in the signature maps Witness and
+// FinalizeArbitration take. Exported because anything assembling those
+// signatures lives outside this package.
+func XOnlyHex(key *btcec.PublicKey) string {
 	return fmt.Sprintf("%x", schnorr.SerializePubKey(key))
 }

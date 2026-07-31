@@ -132,8 +132,13 @@ func (p *party) fund(t *testing.T, sats int64) {
 
 	// The faucet confirms its own payment, but arkd's view of the chain lags it,
 	// and Settle has to wait for a batch to close. Retrying covers both.
+	//
+	// Each attempt mines. Nothing mines on this stack unless a test asks, so an
+	// input arkd is still calling unconfirmed would stay that way however long
+	// we waited — retrying without producing blocks is retrying nothing.
 	var settleErr error
 	waitFor(t, 2*time.Minute, "Settle to succeed", func() error {
+		mine(t, 1)
 		_, settleErr = p.sdk.Settle(ctx)
 		return settleErr
 	})

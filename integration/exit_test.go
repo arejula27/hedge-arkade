@@ -35,21 +35,33 @@ import (
 // settle on a chain that survives between runs, and a leftover output at a
 // shared address makes them read each other's state. The address is logged, so
 // a failure is still traceable.
-func exitContract(t *testing.T) (covenant.Contract, *btcec.PrivateKey, *btcec.PrivateKey, *covenant.Sweep) {
+type exitParties struct {
+	short, long, service *btcec.PrivateKey
+}
+
+func exitContract(t *testing.T) (covenant.Contract, exitParties, *covenant.Sweep) {
 	t.Helper()
 
-	short, long, service := freshKey(t), freshKey(t), freshKey(t)
+	parties := exitParties{freshKey(t), freshKey(t), freshKey(t)}
 
 	c := contract(t)
-	c.Keys.Short = short.PubKey()
-	c.Keys.Long = long.PubKey()
+	c.Keys.Short = parties.short.PubKey()
+	c.Keys.Long = parties.long.PubKey()
 
-	sweep, err := covenant.NewSweep(short.PubKey(), long.PubKey(), service.PubKey())
+	// Pay the parties to the same fresh keys that sign for them. Leaving the
+	// shared payout addresses in place would have two runs settling into the
+	// same place and reading each other's outputs.
+	c.Terms.ShortLockScript = p2tr(parties.short.PubKey())
+	c.Terms.LongLockScript = p2tr(parties.long.PubKey())
+
+	sweep, err := covenant.NewSweep(
+		parties.short.PubKey(), parties.long.PubKey(), parties.service.PubKey(),
+	)
 	if err != nil {
 		t.Fatalf("NewSweep: %v", err)
 	}
 
-	return c, short, long, sweep
+	return c, parties, sweep
 }
 
 func freshKey(t *testing.T) *btcec.PrivateKey {
@@ -202,7 +214,7 @@ func requireBlockDelay(t *testing.T) {
 func TestTheChainAcceptsTheUnilateralExit(t *testing.T) {
 	requireBlockDelay(t)
 
-	c, short, long, sweep := exitContract(t)
+	c, parties, sweep := exitContract(t)
 	e := onchain(t)
 
 	taprootKey, err := c.TaprootKey()
@@ -221,7 +233,7 @@ func TestTheChainAcceptsTheUnilateralExit(t *testing.T) {
 		t.Fatalf("funding outpoint: %v", err)
 	}
 	pkg, err := c.PreSignExit(
-		short, long, *outpoint, exitFundedSats, exitFeeSats, sweep.PkScript,
+		parties.short, parties.long, *outpoint, exitFundedSats, exitFeeSats, sweep.PkScript,
 	)
 	if err != nil {
 		t.Fatalf("PreSignExit: %v", err)
@@ -275,7 +287,7 @@ func TestTheChainAcceptsTheUnilateralExit(t *testing.T) {
 func TestTheChainRefusesARewrittenExit(t *testing.T) {
 	requireBlockDelay(t)
 
-	c, short, long, sweep := exitContract(t)
+	c, parties, sweep := exitContract(t)
 	e := onchain(t)
 
 	taprootKey, err := c.TaprootKey()
@@ -286,7 +298,7 @@ func TestTheChainRefusesARewrittenExit(t *testing.T) {
 	t.Logf("contract address %s", address)
 
 	// Where the short would rather the money went: a 2-of-3 the long is not in.
-	thief, err := covenant.NewSweep(short.PubKey(), short.PubKey(), short.PubKey())
+	thief, err := covenant.NewSweep(parties.short.PubKey(), parties.short.PubKey(), parties.short.PubKey())
 	if err != nil {
 		t.Fatalf("NewSweep: %v", err)
 	}
@@ -298,7 +310,7 @@ func TestTheChainRefusesARewrittenExit(t *testing.T) {
 	}
 
 	pkg, err := c.PreSignExit(
-		short, long, *outpoint, exitFundedSats, exitFeeSats, sweep.PkScript,
+		parties.short, parties.long, *outpoint, exitFundedSats, exitFeeSats, sweep.PkScript,
 	)
 	if err != nil {
 		t.Fatalf("PreSignExit: %v", err)

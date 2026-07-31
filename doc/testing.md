@@ -122,6 +122,9 @@ What it pins:
 - **The unroll**, from a contract that is a genuine offchain VTXO: walk its chain down onto Bitcoin
   a transaction at a time, then exit. This is the complete claim — funded through the operator,
   recovered without it
+- **The arbitration after an exit**: the service proposes a split from an oracle-signed price, a
+  party verifies and signs, and both sides are paid onchain. The service alone cannot build a
+  witness, and a party will not sign a proposal that pays the service
 
 Rejections here are asserted on bitcoind's reason, not merely on failure: `sendrawtransaction`
 reports RPC error -26 for a covenant doing its job and for a typo in the setup alike, so
@@ -131,6 +134,11 @@ broadcast early, `Invalid Schnorr signature` for one rewritten after signing.
 The exit tests generate fresh party keys rather than using the fixed ones. They settle on a chain
 that survives between runs, and a leftover output at a shared contract address would make two runs
 read each other's state. The address is logged, so a failure is still traceable.
+
+Retry loops that wait on a confirmation have to mine. `AUTOMINE_INTERVAL=0` means nothing produces
+blocks unless a test asks, so retrying a Settle whose boarding input arkd calls unconfirmed is
+retrying nothing — it will still be unconfirmed two minutes later. This is intermittent rather than
+reliable, which is worse: it depends on whether some other test happened to mine while you waited.
 
 Two things the unroll needs that are worth knowing. The batch commitment the chain hangs from sits
 unconfirmed in the mempool until a test mines it — `AUTOMINE_INTERVAL=0` — so the unroll confirms it
@@ -165,3 +173,4 @@ script against it happily and then arkd would reject a VTXO that never existed.
 | `integration/redemption_test.go` | Leaf 2, and signing with keys no wallet holds |
 | `integration/exit_test.go` | Exits the contract onto the chain, with no service involved |
 | `integration/unroll_test.go` | The whole thing: offchain VTXO to swept onchain output |
+| `integration/arbitration_test.go` | What happens to the money after an exit |

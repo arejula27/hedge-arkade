@@ -411,7 +411,7 @@ func TestAnyTwoOfTheThreeCanSpendTheSweep(t *testing.T) {
 			if err != nil {
 				t.Fatalf("signing: %v", err)
 			}
-			sigs[xOnlyHex(key.PubKey())] = sig.Serialize()
+			sigs[XOnlyHex(key.PubKey())] = sig.Serialize()
 		}
 
 		witness, err := s.Witness(sigs)
