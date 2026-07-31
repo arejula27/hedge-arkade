@@ -559,52 +559,99 @@ func TestArkdRefusesARenewalOnlyOnePartySigned(t *testing.T) {
 	}
 }
 
-// The three round trips. A contract is created in one batch, renewed into
-// another, and only then closed — through each of its three leaves in turn.
+// Closing at whichever round the contract happens to be in.
 //
-// A contract VTXO inherits the batch expiry of whatever funded it, so without
-// renewal every contract is bounded by a batch it did not choose. These are the
-// tests that say the contract still works after outliving that batch, which is
-// the whole reason renewal exists.
+// A year-long contract against monthly batches is renewed twelve times, and
+// nobody agrees in advance which round they will want out of. So the question
+// is not whether a renewed contract closes — it is whether round seven differs
+// from round one. Structurally it should not: every renewal produces a VTXO of
+// the same shape at the same address. These tests say so out loud, by closing
+// through each leaf at more than one point in the chain.
+//
+// Note that closing *early* is leaves 2 and 3. Leaf 1 fires at maturity or at a
+// liquidation, so it is not a way out of a contract that is neither.
+
+// renewalRounds is where each leaf is closed, and it stops at two on purpose.
+//
+// There is exactly one structural transition in the chain. Round 1 starts from
+// a VTXO an Arkade transaction created; round 2 starts from one a batch tree
+// branch created, which is what every round after it starts from too. Round 7
+// is round 2 again. Chaining further buys CI time, not coverage — what would
+// make a late round differ is something accumulating, and nothing does: each
+// renewal produces the same VTXO at the same address for the same sats.
+var renewalRounds = []int{1, 2}
+
+// renewTimes renews the contract n times, insisting each round lands somewhere
+// new. A renewal that returned the same outpoint would pass every other
+// assertion here while having done nothing.
+func renewTimes(
+	t *testing.T, p *party, c covenant.Contract, outpoint wire.OutPoint,
+	short, long *btcec.PrivateKey, n int,
+) wire.OutPoint {
+	t.Helper()
+
+	seen := map[wire.OutPoint]bool{outpoint: true}
+	for round := 1; round <= n; round++ {
+		outpoint = renew(t, p, c, outpoint, short, long)
+		if seen[outpoint] {
+			t.Fatalf("renewal %d put the contract back where it already was", round)
+		}
+		seen[outpoint] = true
+		t.Logf("round %d: the contract is at %s", round, outpoint)
+	}
+	return outpoint
+}
 
 // Leaf 1: the covenant settles a renewed contract exactly as it settles a fresh
-// one. The renewed VTXO holds PayoutSats to the sat, which is what makes this
-// possible at all — see TestRenewalCannotBePaidOutOfTheContract.
+// one, however many rounds it has been through. The renewed VTXO holds
+// PayoutSats to the sat, which is what makes this possible at all — see
+// TestRenewalCannotBePaidOutOfTheContract.
 func TestARenewedContractStillSettles(t *testing.T) {
-	c := contract(t)
-	p := newParty(t)
-	p.fund(t, boardedSats)
+	for _, rounds := range renewalRounds {
+		t.Run(fmt.Sprintf("after %d renewals", rounds), func(t *testing.T) {
+			c := contract(t)
+			p := newParty(t)
+			p.fund(t, boardedSats)
 
-	outpoint := fundContract(t, p, c)
-	renewed := renew(t, p, c, outpoint, shortKey, longKey)
-	if renewed == outpoint {
-		t.Fatal("renewal did not move the contract")
-	}
+			outpoint := renewTimes(
+				t, p, c, fundContract(t, p, c), shortKey, longKey, rounds,
+			)
 
-	arkTx, checkpoints := settlementSpending(t, c, renewed, shortPayout, longPayout)
-	if err := p.submitToEmulator(t, arkTx, checkpoints); err != nil {
-		t.Fatalf("the stack refused to settle a renewed contract: %v", err)
+			arkTx, checkpoints := settlementSpending(t, c, outpoint, shortPayout, longPayout)
+			if err := p.submitToEmulator(t, arkTx, checkpoints); err != nil {
+				t.Fatalf("the stack refused to settle a renewed contract: %v", err)
+			}
+		})
 	}
 }
 
-// Leaf 2: the parties can still close early at a split of their own after a
-// renewal. This is also the leaf the renewal itself forfeits through, so it
-// proves the leaf survives being used that way.
+// Leaf 2: the parties close early at a split of their own, whichever round they
+// decide to. This is also the leaf the renewal itself forfeits through, so it
+// proves the leaf survives being used that way — repeatedly.
 func TestARenewedContractStillRedeemsMutually(t *testing.T) {
-	c := contract(t)
-	p := newParty(t)
-	p.fund(t, boardedSats)
+	for _, rounds := range renewalRounds {
+		t.Run(fmt.Sprintf("after %d renewals", rounds), func(t *testing.T) {
+			c := contract(t)
+			p := newParty(t)
+			p.fund(t, boardedSats)
 
-	outpoint := fundContract(t, p, c)
-	renewed := renew(t, p, c, outpoint, shortKey, longKey)
+			outpoint := renewTimes(
+				t, p, c, fundContract(t, p, c), shortKey, longKey, rounds,
+			)
 
-	lopsided := []*wire.TxOut{
-		{Value: c.Terms.PayoutSats - int64(stack.dust), PkScript: c.Terms.ShortLockScript},
-		{Value: int64(stack.dust), PkScript: c.Terms.LongLockScript},
-	}
+			lopsided := []*wire.TxOut{
+				{
+					Value:    c.Terms.PayoutSats - int64(stack.dust),
+					PkScript: c.Terms.ShortLockScript,
+				},
+				{Value: int64(stack.dust), PkScript: c.Terms.LongLockScript},
+			}
 
-	if err := redeem(t, p, c, renewed, lopsided, shortKey, longKey); err != nil {
-		t.Fatalf("the stack refused a mutual redemption after a renewal: %v", err)
+			if err := redeem(t, p, c, outpoint, lopsided, shortKey, longKey); err != nil {
+				t.Fatalf("the stack refused a mutual redemption after %d renewals: %v",
+					rounds, err)
+			}
+		})
 	}
 }
 
@@ -617,6 +664,14 @@ func TestARenewedContractStillRedeemsMutually(t *testing.T) {
 // parties have to sign again, for a VTXO whose identity nobody could know in
 // advance, which is why renewal cannot be delegated end to end.
 func TestARenewedContractStillExitsUnilaterally(t *testing.T) {
+	for _, rounds := range renewalRounds {
+		t.Run(fmt.Sprintf("after %d renewals", rounds), func(t *testing.T) {
+			exitAfterRenewals(t, rounds)
+		})
+	}
+}
+
+func exitAfterRenewals(t *testing.T, rounds int) {
 	requireBlockDelay(t)
 
 	c, parties, sweep := exitContract(t)
@@ -633,10 +688,7 @@ func TestARenewedContractStillExitsUnilaterally(t *testing.T) {
 		t.Fatalf("PreSignExit: %v", err)
 	}
 
-	renewed := renew(t, p, c, outpoint, parties.short, parties.long)
-	if renewed == outpoint {
-		t.Fatal("renewal did not move the contract")
-	}
+	renewed := renewTimes(t, p, c, outpoint, parties.short, parties.long, rounds)
 	if stale.Tx.TxIn[0].PreviousOutPoint == renewed {
 		t.Fatal("the pre-signed exit still points at the contract, so it proves nothing")
 	}
@@ -686,38 +738,4 @@ func TestARenewedContractStillExitsUnilaterally(t *testing.T) {
 		}
 		return fmt.Errorf("no output of %d sats at the sweep", want)
 	})
-}
-
-// Renewing once proves the mechanism; renewing repeatedly proves the contract
-// is not bounded by any batch at all.
-//
-// The second renewal is the one that matters most: it starts from a VTXO the
-// first one created, whose ancestry is a branch of a batch tree rather than an
-// Arkade transaction. That is the case a contract is in for the rest of its
-// life, and the first renewal does not exercise it. The third is there because
-// nothing should distinguish it from the second, and a chain that only survived
-// two hops would say otherwise.
-func TestAContractSurvivesSeveralRenewals(t *testing.T) {
-	c := contract(t)
-	p := newParty(t)
-	p.fund(t, boardedSats)
-
-	outpoint := fundContract(t, p, c)
-
-	seen := map[wire.OutPoint]bool{outpoint: true}
-	for round := 1; round <= 3; round++ {
-		outpoint = renew(t, p, c, outpoint, shortKey, longKey)
-		if seen[outpoint] {
-			t.Fatalf("renewal %d put the contract back where it already was", round)
-		}
-		seen[outpoint] = true
-		t.Logf("renewal %d: the contract is now at %s", round, outpoint)
-	}
-
-	// Still the contract it started as: same terms, same address, still exactly
-	// PayoutSats, and the covenant still settles it.
-	arkTx, checkpoints := settlementSpending(t, c, outpoint, shortPayout, longPayout)
-	if err := p.submitToEmulator(t, arkTx, checkpoints); err != nil {
-		t.Fatalf("the stack refused to settle a thrice-renewed contract: %v", err)
-	}
 }
