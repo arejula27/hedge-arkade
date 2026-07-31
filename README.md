@@ -17,8 +17,10 @@ The service never custodies funds.
 ## Getting started
 
 ```sh
-just              # list recipes
-just check        # fmt, vet, tests
+just                    # list recipes
+just check              # fmt, vet, tests — no Docker, no network
+just regtest-up         # start arkd + emulator on regtest (needs Docker)
+just test-integration   # the covenant against the live stack
 ```
 
 Every recipe wraps itself in `nix develop`, so a bare shell with nix is enough. The dev shell pins
@@ -29,6 +31,7 @@ Go 1.26.5 — the version `pkg/arkade` requires — plus Node 22 and `just`.
 | Path | What |
 |---|---|
 | `covenant/` | The contract. Builds the Arkade Script and runs it against the VM |
+| `integration/` | The same contract against a live arkd and emulator |
 | `doc/` | Design notes |
 
 ## How it settles

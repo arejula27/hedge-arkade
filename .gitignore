@@ -15,3 +15,6 @@ coverage.out
 
 # Local working notes, not shared
 NOTES.local.md
+
+# regtest stack, cloned on demand
+.regtest/

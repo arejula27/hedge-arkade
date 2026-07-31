@@ -22,8 +22,13 @@
             gopls
             gotools
 
-            # Client-side contract verifier
+            # Client-side contract verifier, and the arkade-regtest CLI
             nodejs_22
+
+            # The regtest stack. Nix supplies the clients; the daemon comes
+            # from the host, so `just check` never needs either.
+            docker-client
+            docker-compose
 
             just
             git

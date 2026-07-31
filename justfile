@@ -9,8 +9,11 @@ go := "nix develop --command bash -c"
 _default:
     @just --list
 
-# Format, vet and test.
+# Format, vet and test. No Docker, no network.
 check: fmt-check vet test
+
+# Everything, including the live stack. Needs Docker.
+check-all: check regtest-up test-integration
 
 # Covenant tests against the real Arkade VM.
 test:
@@ -34,17 +37,43 @@ test-cover:
 
 # Rewrite files that are not gofmt'd.
 fmt:
-    @{{go}} 'cd covenant && gofmt -w .'
+    @{{go}} 'gofmt -w covenant integration'
 
 # Fail if anything is not gofmt'd.
 fmt-check:
-    @{{go}} 'cd covenant && test -z "$(gofmt -l .)" || { echo "not gofmt'"'"'d:"; gofmt -l .; exit 1; }'
+    @{{go}} 'test -z "$(gofmt -l covenant integration)" || { echo "not gofmt'"'"'d:"; gofmt -l covenant integration; exit 1; }'
 
 vet:
     @{{go}} 'cd covenant && go vet ./...'
+    @{{go}} 'cd integration && go vet -tags integration ./...'
 
 tidy:
     @{{go}} 'cd covenant && go mod tidy'
+    @{{go}} 'cd integration && go mod tidy'
+
+# --- Integration -------------------------------------------------------------
+#
+# These run against a live arkd + emulator on regtest, so they need Docker.
+# `just check` never touches them.
+
+# Start the regtest stack (bitcoind, arkd, arkd-wallet, emulator).
+regtest-up:
+    @./scripts/regtest.sh up
+
+# Stop it, keeping the data.
+regtest-down:
+    @./scripts/regtest.sh down
+
+# Stop it and delete everything, including the clone.
+regtest-clean:
+    @./scripts/regtest.sh clean
+
+regtest-logs *args:
+    @./scripts/regtest.sh logs {{args}}
+
+# Run the covenant against the live stack. Fails if it is not up.
+test-integration:
+    @{{go}} 'cd integration && go test -tags integration -count=1 -v ./...'
 
 # Print the settlement script hex the TypeScript verifier must match.
 script-hex:

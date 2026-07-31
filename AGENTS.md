@@ -60,6 +60,13 @@ runs before co-signing (`internal/application/tx.go:67`).
 
 `just check` runs fmt, vet and the tests; every recipe wraps itself in `nix develop`.
 
+**But an in-process VM cannot see transaction shape.** It builds its own transaction, so it has no
+opinion about the emulator packet or the anchor a real one carries. `integration/` is the second
+tier: a separate Go module, behind the `integration` build tag, that submits a real settlement to a
+real emulator over gRPC. `just regtest-up` starts the stack (needs Docker), `just test-integration`
+runs it. Both tiers run in CI; only the first runs without Docker. Full write-up in
+`doc/testing.md`.
+
 This matters more here than in `../bond-protocol`. That project had to write a symbolic
 `stackSim.ts`, whose own header admits *"it is not an interpreter: comparisons and arithmetic
 produce opaque symbols"*. Fine for comparisons and asset lookups; useless for a contract whose

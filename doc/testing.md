@@ -1,5 +1,25 @@
 # Testing the covenant
 
+Two tiers.
+
+| | `covenant/` | `integration/` |
+|---|---|---|
+| Runs | `just check` | `just test-integration` |
+| Needs | nothing | Docker, a live stack |
+| VM | in process, synthetic transaction | the real emulator over gRPC |
+| Catches | arithmetic, the clamp, timing, recipients, exact values | transaction shape, the emulator packet, protocol drift |
+
+The split matters because the first tier builds its own transaction, so it cannot see anything
+about the shape a real one has. That is not hypothetical: a `numOutputs == 2` check passed the
+entire unit suite and would have rejected every settlement in production, because an Arkade
+transaction also carries the emulator packet and a P2A anchor.
+
+`integration/` is a separate Go module. `covenant/` has three direct dependencies and is what the
+TypeScript verifier is pinned to; the client SDK and the emulator client belong nowhere near it.
+Everything there is behind the `integration` build tag, so a machine without Docker is unaffected.
+
+## Tier 1 — the in-process VM
+
 `pkg/arkade` has its own `go.mod`, so it imports standalone. Build a synthetic `wire.MsgTx`,
 implement `ArkPrevOutFetcher` (3 methods), and the real covenant VM runs under `go test` — no
 Docker, no arkd, no nigiri.
@@ -48,11 +68,42 @@ For the taproot tree, without a running arkd:
 - The tweaked key in leaf 1 is the one the emulator's `ReadArkadeScript` will look for
 - A golden hex fixture of the scriptPubKey
 
+## Tier 2 — the live stack
+
+`scripts/regtest.sh` clones [arkade-regtest](https://github.com/ArkLabsHQ/arkade-regtest) into
+`.regtest/` and starts its `emulator` profile: bitcoind, the indexers, arkd, arkd-wallet and the
+emulator. Boltz, LND, the solver and the web wallet are not needed to settle a covenant and are
+three more ways for CI to fail on something else. `AUTOMINE_INTERVAL=0` keeps block height still.
+
+Nothing about the contract is a constant the tests chose. The arkd signer key, the emulator signer
+key, the unilateral exit delay, the dust threshold and the checkpoint tapscript all come from the
+two services' `GetInfo`, so a version bump that changes any of them fails here rather than in
+production.
+
+What it pins:
+
+- The live operator accepts the VTXO script, and rejects an exit delay below its own minimum
+- The running arkd's decoder parses every leaf
+- Both payouts clear the operator's dust threshold, which is a runtime value
+- Every control block verifies against the address that would be funded
+- **The emulator signs a real settlement**: a transaction built by `offchain.BuildTxs`, carrying the
+  checkpoint, the extension OP_RETURN and the anchor, with the covenant and the two oracle messages
+  in the emulator packet. The emulator recomputes the tweak, finds it in the leaf, executes the
+  script and signs — or does not
+- It refuses a sat moved to the short, and a redirected payout
+
+The settlement tests do not need a wallet or a faucet. The emulator resolves the input it is
+spending from the `PrevArkTxField` on the PSBT, so the funding transaction is synthesised — it has
+to hold exactly `payoutSats`, which is what the covenant checks anyway.
+
 ## Files
 
 | File | What |
 |---|---|
-| `settlement.go` | `Terms` and `SettlementScript()` |
-| `oracle.go` | Message layout and the signing the oracle service will do |
-| `vtxo.go` | `Contract`: the three leaves, the taproot tree, control blocks, arkd validation |
-| `vm.go` | `ArkPrevOutFetcher`, the synthetic spending transaction, and `Run` |
+| `covenant/settlement.go` | `Terms` and `SettlementScript()` |
+| `covenant/oracle.go` | Message layout and the signing the oracle service will do |
+| `covenant/vtxo.go` | `Contract`: the three leaves, the taproot tree, control blocks, arkd validation |
+| `covenant/vm.go` | `ArkPrevOutFetcher`, the synthetic spending transaction, and `Run` |
+| `integration/stack.go` | Endpoints and the wait-for-ready loop |
+| `integration/main_test.go` | Reads both services' `GetInfo` into the fixture |
+| `integration/settlement_test.go` | Builds a real settlement and submits it to the emulator |

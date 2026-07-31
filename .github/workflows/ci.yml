@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  # Fast, hermetic: the covenant against the in-process Arkade VM.
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: go-${{ hashFiles('**/go.sum') }}
+          restore-keys: go-
+
+      - run: nix develop --command just check
+
+  # The covenant against a live arkd and emulator. This is the tier that sees
+  # what an in-process VM cannot: transaction shape, the emulator packet, and
+  # the tweaked key the emulator looks for in the leaf.
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: go-${{ hashFiles('**/go.sum') }}
+          restore-keys: go-
+
+      # ubuntu-latest ships Docker and the compose plugin.
+      - name: Start the regtest stack
+        run: nix develop --command just regtest-up
+
+      - name: Run the integration tests
+        run: nix develop --command just test-integration
+
+      - name: Stack logs
+        if: failure()
+        run: nix develop --command just regtest-logs || true
+
+      - name: Tear down
+        if: always()
+        run: nix develop --command just regtest-down || true
