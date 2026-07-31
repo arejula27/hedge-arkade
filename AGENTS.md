@@ -17,7 +17,7 @@ covenant only computes the hedge payout and gives the remainder to the long.
 **Scope**: contract logic + a web service that coordinates and co-signs. The service never
 custodies funds.
 
-Full protocol spec in `README.md`. Read it first.
+Start with `doc/oracle.md` — settlement without a clock is the part that explains the rest.
 
 ## Stack
 
@@ -96,7 +96,7 @@ all need real execution.
 - **Exit leaves drop the covenant.** One CSV 2-of-2 leaf (hedge + long); the exit transaction is
   **pre-signed at funding** and sweeps to a 2-of-3 `{hedge, long, service}`. Pre-signing is what
   makes it unilateral — either party broadcasts it alone once the CSV matures, and neither can
-  redirect the destination. Full write-up in README §"Leaf 3"
+  redirect the destination. Full write-up in `doc/unilateral-exit.md`
 - **Two path classes, two rules.** Collaborative paths (no CSV) must carry the operator pubkey and
   use CLTV for timelocks; unilateral paths (CSV) omit the operator and need a delay at or above
   `getInfo().exitDelay`. arkd classifies each closure and applies the matching rule
@@ -166,23 +166,12 @@ The covenant is enforced by the emulator co-signing, **not** by Bitcoin consensu
 - This is strictly weaker than Bitcoin consensus and strictly stronger than a custodian: the
   emulator is one signature in a multisig and cannot move funds alone
 
-## Current status
+## Where things are written down
 
-**The settlement covenant is complete and executes on the real VM — 69 cases green.** It checks
-transaction shape, both recipients, both oracle signatures, sequence adjacency, the timing window,
-the clamp, and both payouts exactly. Verified by mutation: deleting the adjacency check fails
-exactly the two cases only it can catch.
+- `README.md` — what the project is. Kept short on purpose
+- `doc/` — how the contract works. Durable design, no status and no decision log
+- `NOTES.local.md` — **gitignored, read it first.** Current status, settled decisions, open
+  questions, test counts, loose ends. Anything that goes stale lives here, not in git
 
-Not built yet, in order:
-
-1. The tapscript segments and the taproot tree (three leaves)
-2. The pre-signed exit package
-3. The service (Go): API, web, users, matching, oracle signing, storage
-4. The TypeScript verifier, pinned to `covenant`'s golden hex fixture by a CI test
-
-Open and unresolved: batch expiry versus a fixed-term contract (README §Open risk), and the dust
-value, which is BCH's 1332 and needs setting for Bitcoin's relay rules.
-
-Note for integration work: in `../bond-protocol` the regtest stack could never be started because
-Docker Desktop's WSL integration is disabled on this machine. Resolve that before planning
-integration tests.
+Keep that separation when writing: a fact about the mechanism goes in `doc/`, a fact about where we
+are goes in `NOTES.local.md`.

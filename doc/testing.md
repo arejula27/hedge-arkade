@@ -1,0 +1,43 @@
+# Testing the covenant
+
+`pkg/arkade` has its own `go.mod`, so it imports standalone. Build a synthetic `wire.MsgTx`,
+implement `ArkPrevOutFetcher` (3 methods), and the real covenant VM runs under `go test` — no
+Docker, no arkd, no nigiri.
+
+It is the same interpreter the emulator service runs before co-signing
+(`internal/application/tx.go:67`), consumed as a published module rather than a local `replace`, so
+the repo builds anywhere. `Run` applies `WithExactComputeLimits(DefaultComputeLimits())`, the table
+the service uses when no `COMPUTE_LIMITS` overrides are set, so a change to those defaults surfaces
+as a test failure.
+
+## Rules
+
+**Expected payouts are constants in the test table, never computed.** Computing them in Go
+recreates the parallel implementation the covenant exists to be the only copy of. If the table and
+the VM disagree, the VM is what settles real money.
+
+**Every accepted settlement generates its own rejections.** Each side ±1 and a sat moved either
+way, all of which must fail — values are checked exactly, so overpaying is a different settlement
+rather than a generous one.
+
+## What is pinned
+
+- The clamp at both boundaries, one cent inside each, and far past them
+- The dust floor, including where the two payouts sum to more than `payoutSats`
+- Truncation direction, the leverage term, a nominal past what BCH's 4-byte ints could hold
+- Recipients: payouts redirected, swapped, sent to a non-taproot output
+- Shape: a third output, a missing output, an extra input
+- Timing: settlement at maturity, liquidation at either boundary, liquidation at `startTimestamp`
+- Sequence: a mid-range price from mid-contract, a message that is not the first after maturity, a
+  gap, predecessor and settlement swapped, the same message twice, a zero sequence
+- Authentication: each field edited after signing, a signature from the wrong key, the two
+  signatures swapped, an empty signature, a garbage signature, a different oracle key
+- A golden hex fixture of the built script, which the TypeScript verifier will pin to
+
+## Files
+
+| File | What |
+|---|---|
+| `settlement.go` | `Terms` and `SettlementScript()` |
+| `oracle.go` | Message layout and the signing the oracle service will do |
+| `vm.go` | `ArkPrevOutFetcher`, the synthetic spending transaction, and `Run` |

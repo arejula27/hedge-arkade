@@ -12,3 +12,6 @@ coverage.out
 *.tsbuildinfo
 .env
 .DS_Store
+
+# Local working notes, not shared
+NOTES.local.md
