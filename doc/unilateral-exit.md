@@ -15,6 +15,11 @@ Inside the VTXO every closure arkd can decode is N-of-N — there are no thresho
 **destination** is *"any Bitcoin Output Script"*: once the CSV matures and the transaction is
 onchain, arkd has no say and a real 2-of-3 is trivial.
 
+The leaf is a `CSVMultisigClosure`. The CSV is not decoration: it is what makes arkd classify the
+leaf as an exit rather than reject it as a forfeit closure missing its signer. The delay must be
+seconds-based, a multiple of 512, and at or above the operator's `getInfo().exitDelay` — the lower
+bound is theirs, the value above it is ours.
+
 **The exit transaction is pre-signed at funding**, with both parties cooperating:
 
 ```

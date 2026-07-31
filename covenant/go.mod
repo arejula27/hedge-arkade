@@ -3,16 +3,16 @@ module github.com/arejula27/hedge/covenant
 go 1.26.5
 
 require (
+	github.com/arkade-os/arkd/pkg/ark-lib v0.8.1-0.20260318170839-137daaec3a70
 	github.com/arkade-os/emulator/pkg/arkade v0.0.0-20260728084232-b2c7d853d267
 	github.com/btcsuite/btcd v0.24.3-0.20240921052913-67b8efd3ba53
+	github.com/btcsuite/btcd/btcec/v2 v2.3.5
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.2.0
 )
 
 require (
-	github.com/arkade-os/arkd/pkg/ark-lib v0.8.1-0.20260318170839-137daaec3a70 // indirect
 	github.com/arkade-os/arkd/pkg/errors v0.0.0-20260303153651-8615412e4dea // indirect
 	github.com/bits-and-blooms/bitset v1.20.0 // indirect
-	github.com/btcsuite/btcd/btcec/v2 v2.3.5 // indirect
 	github.com/btcsuite/btcd/btcutil v1.1.5 // indirect
 	github.com/btcsuite/btcd/btcutil/psbt v1.1.9 // indirect
 	github.com/btcsuite/btclog v0.0.0-20170628155309-84c8d2346e9f // indirect

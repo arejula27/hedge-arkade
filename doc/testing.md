@@ -34,10 +34,23 @@ rather than a generous one.
   signatures swapped, an empty signature, a garbage signature, a different oracle key
 - A golden hex fixture of the built script, which the TypeScript verifier will pin to
 
+For the taproot tree, without a running arkd:
+
+- arkd's own `TapscriptsVtxoScript.Validate` accepts the tree, and rejects a forfeit leaf built
+  around the wrong signer or an exit delay below the operator's minimum
+- Every leaf decodes back through `DecodeClosure` into one of arkd's five known shapes and
+  re-encodes byte for byte
+- Leaves land in the right class: two forfeit closures, one exit closure
+- Every leaf's control block verifies against the funded output key, over the NUMS internal key
+- Every contract parameter changes the address, so the address proves the tree
+- The tweaked key in leaf 1 is the one the emulator's `ReadArkadeScript` will look for
+- A golden hex fixture of the scriptPubKey
+
 ## Files
 
 | File | What |
 |---|---|
 | `settlement.go` | `Terms` and `SettlementScript()` |
 | `oracle.go` | Message layout and the signing the oracle service will do |
+| `vtxo.go` | `Contract`: the three leaves, the taproot tree, control blocks, arkd validation |
 | `vm.go` | `ArkPrevOutFetcher`, the synthetic spending transaction, and `Run` |

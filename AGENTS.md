@@ -101,6 +101,15 @@ all need real execution.
   use CLTV for timelocks; unilateral paths (CSV) omit the operator and need a delay at or above
   `getInfo().exitDelay`. arkd classifies each closure and applies the matching rule
   (`vtxo_script.go:93`)
+- **The covenant is not in the taproot tree.** Every leaf is a plain N-of-N multisig. The Arkade
+  Script enters through a key: leaf 1 carries
+  `arkade.ComputeArkadeScriptPublicKey(emulatorSigner, arkade.ArkadeScriptHash(script))`, and the
+  script itself travels in the emulator packet (an OP_RETURN TLV) of the spending transaction. The
+  emulator recomputes the tweak and refuses with `ErrTweakedArkadePubKeyNotFound` if it does not
+  match (`pkg/arkade/script.go:91`). Do not reach for `ConditionMultisigClosure` — its
+  `EvaluateScriptToBool` runs btcd's engine, which does not know Arkade opcodes
+- **Settlement carries no party key.** The covenant fixes recipients and amounts exactly, so anyone
+  holding two adjacent oracle messages may settle. AnyHedge's `payout` is permissionless too
 - **Maturity is gated in the covenant, not by a tapscript CLTV.** A leaf-level CLTV is
   unconditional and would block early liquidation. The gate reads the oracle message's own
   timestamp

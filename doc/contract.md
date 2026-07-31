@@ -83,19 +83,46 @@ Internal key = **NUMS** (Nothing Up My Sleeve) — no key-path spend, forcing on
         ┌───────────────────┼───────────────────┐
         |                   |                   |
       Leaf 1              Leaf 2              Leaf 3
-   Settlement         Early mutual         Emergency
+   Settlement         Early mutual         Unilateral
    at maturity        close                exit
+   or liquidation
 
-   covenant+oracle    covenant+oracle      CSV 2-of-2
-   trigger: matured   trigger: both         hedge+long
-   or liquidated      parties sign         (pre-signed)
+   arkd signer        short + long         CSV, then
+   + tweaked          + arkd signer        short + long
+   emulator key
 
    ── collaborative paths (no CSV) ──   ── unilateral path ──
      must carry the operator key,        no operator key,
      spent offchain, instantly           spent on L1 after the CSV
 ```
 
+Every leaf is a plain N-of-N multisig — one of the five shapes arkd's `DecodeClosure` accepts.
+There is no covenant *in* the tree.
+
+**The covenant enters through a key.** Leaf 1 carries
+`ComputeArkadeScriptPublicKey(emulatorSigner, taggedHash("ArkScriptHash", settlementScript))`. The
+Arkade Script itself travels in the emulator packet — an OP_RETURN TLV on the spending Arkade
+transaction — alongside its witness. The emulator recomputes the tweak from the script it was
+handed and looks for the result in the leaf being spent (`pkg/arkade/script.go:91`,
+`ReadArkadeScript`). No match, no signature: `ErrTweakedArkadePubKeyNotFound`. A match means it
+executes the script and only signs if it succeeds.
+
+Two consequences. Editing one opcode of the covenant changes the key, so the leaf can only ever ask
+for the script it was built for. And arkd sees an ordinary multisig, so the covenant needs no
+special support from it.
+
+Building this is `covenant/vtxo.go`; `Contract.Validate` runs arkd's own `TapscriptsVtxoScript.Validate`
+against the tree before anything is funded.
+
 ## Leaf 1 — Settlement at maturity or liquidation
+
+Keys: the arkd signer, and the emulator key tweaked by the settlement script.
+
+**No party key.** Whoever holds two adjacent oracle messages can settle, because the covenant
+leaves them no freedom in what the transaction pays — recipients and amounts are checked exactly.
+AnyHedge's `payout` is permissionless for the same reason. In practice the service settles; the
+counterparty or a third party could do it and the result would be identical to the sat.
+
 - Full covenant, co-signed by the emulator
 - `checkSigFromStack` validates the oracle-signed price message
 - `MUL`/`DIV` compute `hedgePayoutSats`
@@ -130,21 +157,14 @@ require(checkSig(shortMutualRedeemSignature, shortMutualRedeemPublicKey));
 require(checkSig(longMutualRedeemSignature, longMutualRedeemPublicKey));
 ```
 
-Two signatures, no oracle, no output constraints. Plus the operator pubkey Arkade requires on a
-collaborative path. Spends offchain, instantly.
+Keys: short, long, and the arkd signer. No oracle and no output constraints — both owners of the
+money agree on any split they like. Spends offchain, instantly.
 
-> **This reverses the 2026-07-30 decision** to settle the early close at the oracle price. That
-> decision rested on "a free split buys nothing Leaf 3 does not already provide", which was wrong:
-> Leaf 3 costs a full CSV wait and lands in a 2-of-3 where the split is *still* unresolved. A free
-> mutual redemption is instant and final.
+AnyHedge's own comment names the use an oracle-priced early close cannot serve: *"useful for example
+in the case of a funding error"* — an unwinding at a price no oracle message supports.
 
-It is also strictly more capable, and the cost is nothing. Both parties must sign, so no one can
-take a discretionary split alone — and when both owners of the money agree, "no path settles at
-discretion" is a principle with nobody left to protect. AnyHedge's own comment names the use the
-oracle-priced version cannot serve: *"useful for example in the case of a funding error"* — an
-unwinding at a price no oracle message supports.
-
-`enableMutualRedemption` comes across too: a contract can be created without this path at all.
+`enableMutualRedemption` comes across too: `Contract.EnableMutualRedemption` drops the leaf entirely,
+and the tree is two leaves instead of three.
 
 ## Why leaves 1 and 2 carry the operator key and leaf 3 does not
 
