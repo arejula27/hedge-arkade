@@ -4,13 +4,16 @@ package integration
 
 import (
 	"encoding/hex"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/arejula27/hedge/covenant"
 	arklib "github.com/arkade-os/arkd/pkg/ark-lib"
 	"github.com/arkade-os/arkd/pkg/ark-lib/intent"
+	"github.com/arkade-os/arkd/pkg/ark-lib/tree"
 	"github.com/arkade-os/arkd/pkg/ark-lib/txutils"
+	"github.com/arkade-os/go-sdk/indexer"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
@@ -260,6 +263,7 @@ func signIntent(t *testing.T, proof *intent.Proof, signers ...*btcec.PrivateKey)
 // until the quote is covered.
 func renewalFee(
 	t *testing.T, p *party, c covenant.Contract, outpoint wire.OutPoint, leaf covenant.Leaf,
+	short, long *btcec.PrivateKey,
 ) int64 {
 	t.Helper()
 
@@ -272,7 +276,7 @@ func renewalFee(
 			t, p, c, outpoint, leaf, fee, intent.IntentMessageTypeEstimateFee,
 		)
 		quoted, err := p.arkd.EstimateIntentFee(
-			t.Context(), signIntent(t, proof, shortKey, longKey, p.privKey), message,
+			t.Context(), signIntent(t, proof, short, long, p.privKey), message,
 		)
 		if err != nil {
 			t.Fatalf("EstimateIntentFee: %v", err)
@@ -299,7 +303,7 @@ func registerRenewal(
 ) (string, error) {
 	t.Helper()
 
-	fee := renewalFee(t, p, c, outpoint, leaf)
+	fee := renewalFee(t, p, c, outpoint, leaf, shortKey, longKey)
 	proof, message := renewalIntent(
 		t, p, c, outpoint, leaf, fee, intent.IntentMessageTypeRegister,
 	)
@@ -308,6 +312,103 @@ func registerRenewal(
 	}
 
 	return p.arkd.RegisterIntent(t.Context(), signIntent(t, proof, signers...), message)
+}
+
+// renew swaps the contract VTXO for a fresh one in a new batch, and returns
+// where the contract now lives.
+//
+// The contract comes out the other side at the same address holding the same
+// sats — only its outpoint and its expiry change. Which is the catch: the
+// pre-signed exit package commits to the outpoint, so it dies here and has to
+// be signed again.
+func renew(
+	t *testing.T, p *party, c covenant.Contract, outpoint wire.OutPoint,
+	short, long *btcec.PrivateKey,
+) wire.OutPoint {
+	t.Helper()
+	ctx := t.Context()
+
+	fee := renewalFee(t, p, c, outpoint, covenant.LeafExit, short, long)
+	payer := feeCoin(t, p)
+	proof, message := renewalIntent(
+		t, p, c, outpoint, covenant.LeafExit, fee, intent.IntentMessageTypeRegister,
+	)
+
+	intentID, err := p.arkd.RegisterIntent(
+		ctx, signIntent(t, proof, short, long, p.privKey), message,
+	)
+	if err != nil {
+		t.Fatalf("arkd refused the renewal intent: %v", err)
+	}
+
+	session := &renewalSession{
+		t: t, party: p, contract: c, intentID: intentID,
+		signer: tree.NewTreeSignerSession(renewalCosigner),
+		coins: []forfeitable{
+			contractForfeit(t, c, outpoint, short, long),
+			feeForfeit(t, p, payer),
+		},
+	}
+
+	commitment, err := session.joinBatch(ctx)
+	if err != nil {
+		t.Fatalf("the renewal batch did not complete: %v", err)
+	}
+	t.Logf("renewed in commitment %s", commitment)
+
+	// Nothing mines on this stack unless a test asks, and a commitment left in
+	// the mempool blocks the next batch: its inputs still look unspent, so the
+	// following intent gets dropped for containing a spent input.
+	mine(t, 1)
+
+	return contractVtxo(t, p, c, outpoint)
+}
+
+// contractVtxo finds the contract's current VTXO, which must be the only
+// spendable one at its address and must hold exactly PayoutSats.
+//
+// `previous` is the outpoint the renewal spent: the indexer is eventually
+// consistent, so a lookup that returned it would mean the swap has not landed
+// yet rather than that it failed.
+func contractVtxo(
+	t *testing.T, p *party, c covenant.Contract, previous wire.OutPoint,
+) wire.OutPoint {
+	t.Helper()
+
+	script := hex.EncodeToString(mustPkScript(t, c))
+	opts := indexer.GetVtxosRequestOption{}
+	if err := opts.WithScripts([]string{script}); err != nil {
+		t.Fatalf("indexer scripts: %v", err)
+	}
+	opts.WithSpendableOnly()
+
+	var found wire.OutPoint
+	waitFor(t, 60*time.Second, "the renewed contract VTXO to appear", func() error {
+		resp, err := p.indexer.GetVtxos(t.Context(), opts)
+		if err != nil {
+			return err
+		}
+
+		for _, v := range resp.Vtxos {
+			if v.Txid == previous.Hash.String() && v.VOut == previous.Index {
+				return fmt.Errorf("the indexer still reports the old VTXO as spendable")
+			}
+			if int64(v.Amount) != c.Terms.PayoutSats {
+				return fmt.Errorf("a VTXO at the contract address holds %d, not %d",
+					v.Amount, c.Terms.PayoutSats)
+			}
+
+			hash, err := chainhashFrom(v.Txid)
+			if err != nil {
+				return err
+			}
+			found = wire.OutPoint{Hash: *hash, Index: v.VOut}
+			return nil
+		}
+		return fmt.Errorf("no spendable VTXO at the contract address yet")
+	})
+
+	return found
 }
 
 // forgetRenewal withdraws a registered intent.
@@ -396,7 +497,7 @@ func TestRenewalCannotBePaidOutOfTheContract(t *testing.T) {
 
 	outpoint := fundContract(t, p, c)
 
-	fee := renewalFee(t, p, c, outpoint, covenant.LeafExit)
+	fee := renewalFee(t, p, c, outpoint, covenant.LeafExit, shortKey, longKey)
 	if fee <= 0 {
 		t.Skip("this operator charges nothing for an intent")
 	}
@@ -456,4 +557,133 @@ func TestArkdRefusesARenewalOnlyOnePartySigned(t *testing.T) {
 			t.Logf("rejected with: %v", err)
 		})
 	}
+}
+
+// The three round trips. A contract is created in one batch, renewed into
+// another, and only then closed — through each of its three leaves in turn.
+//
+// A contract VTXO inherits the batch expiry of whatever funded it, so without
+// renewal every contract is bounded by a batch it did not choose. These are the
+// tests that say the contract still works after outliving that batch, which is
+// the whole reason renewal exists.
+
+// Leaf 1: the covenant settles a renewed contract exactly as it settles a fresh
+// one. The renewed VTXO holds PayoutSats to the sat, which is what makes this
+// possible at all — see TestRenewalCannotBePaidOutOfTheContract.
+func TestARenewedContractStillSettles(t *testing.T) {
+	c := contract(t)
+	p := newParty(t)
+	p.fund(t, boardedSats)
+
+	outpoint := fundContract(t, p, c)
+	renewed := renew(t, p, c, outpoint, shortKey, longKey)
+	if renewed == outpoint {
+		t.Fatal("renewal did not move the contract")
+	}
+
+	arkTx, checkpoints := settlementSpending(t, c, renewed, shortPayout, longPayout)
+	if err := p.submitToEmulator(t, arkTx, checkpoints); err != nil {
+		t.Fatalf("the stack refused to settle a renewed contract: %v", err)
+	}
+}
+
+// Leaf 2: the parties can still close early at a split of their own after a
+// renewal. This is also the leaf the renewal itself forfeits through, so it
+// proves the leaf survives being used that way.
+func TestARenewedContractStillRedeemsMutually(t *testing.T) {
+	c := contract(t)
+	p := newParty(t)
+	p.fund(t, boardedSats)
+
+	outpoint := fundContract(t, p, c)
+	renewed := renew(t, p, c, outpoint, shortKey, longKey)
+
+	lopsided := []*wire.TxOut{
+		{Value: c.Terms.PayoutSats - int64(stack.dust), PkScript: c.Terms.ShortLockScript},
+		{Value: int64(stack.dust), PkScript: c.Terms.LongLockScript},
+	}
+
+	if err := redeem(t, p, c, renewed, lopsided, shortKey, longKey); err != nil {
+		t.Fatalf("the stack refused a mutual redemption after a renewal: %v", err)
+	}
+}
+
+// Leaf 3: the unilateral exit still works after a renewal — but only against
+// the new outpoint.
+//
+// This is the cost renewal carries. A taproot signature commits to the outpoint
+// of the input it spends, and no sighash flag changes that, so the package
+// pre-signed at funding is worthless the moment the contract moves. Both
+// parties have to sign again, for a VTXO whose identity nobody could know in
+// advance, which is why renewal cannot be delegated end to end.
+func TestARenewedContractStillExitsUnilaterally(t *testing.T) {
+	requireBlockDelay(t)
+
+	c, parties, sweep := exitContract(t)
+	p := newParty(t)
+	p.fund(t, boardedSats)
+
+	outpoint := fundContract(t, p, c)
+
+	// The package pre-signed at funding, kept to show what renewal does to it.
+	stale, err := c.PreSignExit(
+		parties.short, parties.long, outpoint, c.Terms.PayoutSats, exitFeeSats, sweep.PkScript,
+	)
+	if err != nil {
+		t.Fatalf("PreSignExit: %v", err)
+	}
+
+	renewed := renew(t, p, c, outpoint, parties.short, parties.long)
+	if renewed == outpoint {
+		t.Fatal("renewal did not move the contract")
+	}
+	if stale.Tx.TxIn[0].PreviousOutPoint == renewed {
+		t.Fatal("the pre-signed exit still points at the contract, so it proves nothing")
+	}
+
+	// Re-signed for the outpoint the renewal created. In production this is a
+	// ceremony both parties have to attend, once per renewal.
+	pkg, err := c.PreSignExit(
+		parties.short, parties.long, renewed, c.Terms.PayoutSats, exitFeeSats, sweep.PkScript,
+	)
+	if err != nil {
+		t.Fatalf("PreSignExit after renewal: %v", err)
+	}
+	signed, err := c.Finalize(pkg)
+	if err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+
+	// From here the operator is not asked for anything.
+	if published := unroll(t, p, renewed); published == 0 {
+		t.Fatal("nothing was unrolled, so the renewed contract was already onchain")
+	}
+
+	e := onchain(t)
+	waitFor(t, 60*time.Second, "the renewed contract output to be indexed onchain", func() error {
+		return outputIsOnchain(t, e, c, renewed)
+	})
+
+	refuses(t, signed, reasonTooEarly)
+	mine(t, int(stack.exitDelay.Value)+1)
+
+	waitFor(t, 60*time.Second, "the chain to accept the matured exit", func() error {
+		return broadcast(t, e, signed)
+	})
+	mine(t, 1)
+
+	sweepAddress := taprootAddress(t, sweepKey(t, sweep))
+	waitFor(t, 60*time.Second, "the swept output to appear", func() error {
+		utxos, err := e.GetUtxos(sweepAddress)
+		if err != nil {
+			return err
+		}
+		want := c.Terms.PayoutSats - exitFeeSats
+		for _, u := range utxos {
+			if int64(u.Amount) == want {
+				return nil
+			}
+		}
+		return fmt.Errorf("no output of %d sats at the sweep", want)
+	})
 }

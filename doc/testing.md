@@ -125,6 +125,14 @@ What it pins:
 - **The arbitration after an exit**: the service proposes a split from an oracle-signed price, a
   party verifies and signs, and both sides are paid onchain. The service alone cannot build a
   witness, and a party will not sign a proposal that pays the service
+- **Renewal**, so the contract can outlive the batch it was funded in: an intent for a VTXO no
+  wallet owns, proved on leaf 3 by the two parties alone and refused when only one signs; and then
+  a real batch swap that forfeits the contract through leaf 2 and recreates it at the same address
+  for the same sats
+- **A contract created in one batch, renewed into another, and closed through each of the three
+  leaves in turn**. The exit is the one that costs something: a taproot signature commits to the
+  outpoint it spends, so renewal invalidates the pre-signed exit package and both parties have to
+  sign a new one
 
 Rejections here are asserted on bitcoind's reason, not merely on failure: `sendrawtransaction`
 reports RPC error -26 for a covenant doing its job and for a typo in the setup alike, so
@@ -174,3 +182,5 @@ script against it happily and then arkd would reject a VTXO that never existed.
 | `integration/exit_test.go` | Exits the contract onto the chain, with no service involved |
 | `integration/unroll_test.go` | The whole thing: offchain VTXO to swept onchain output |
 | `integration/arbitration_test.go` | What happens to the money after an exit |
+| `integration/batch_test.go` | Joining a batch swap on the contract's behalf |
+| `integration/renewal_test.go` | Renewal, and the three leaves after one |

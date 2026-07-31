@@ -114,6 +114,26 @@ The renewal intent therefore carries a second input — somebody's own coin — 
 takes its change back, leaving the contract output at exactly `payoutSats`. This is the natural
 place for the service to earn its keep as the delegate.
 
+### Joining a batch on the contract's behalf
+
+The SDK's `Settle` only swaps VTXOs its wallet owns and signs everything with the wallet's key, so
+it cannot renew a contract. The event loop underneath it can: `arksdk.JoinBatchSession` takes a
+`BatchEventsHandler` interface, so only the signing has to be replaced, not the protocol.
+
+What that replacement has to get right:
+
+- **Forfeit through leaf 2, not through `ForfeitClosures()[0]`.** That helper returns leaves 1 and 2
+  and the SDK takes the first, which here is the settlement leaf — whose second key is the tweaked
+  emulator key, so that forfeit could only be signed by running the covenant. Leaf 2 is a forfeit
+  closure in the ordinary sense: both owners hand the money over and the operator co-signs
+- **The cosigner key signs the tree, not the money.** The branch it signs pays the contract address
+  and nothing else, so the role can be delegated without giving anything up
+- **Mine after the commitment.** Nothing mines on this stack unless a test asks, and a commitment
+  left in the mempool makes the next intent look like it spends an input that is still unspent
+
+Proven end to end in `integration/renewal_test.go`: a contract created in one batch, renewed into
+another, and then closed through each of its three leaves in turn.
+
 Still unresolved, and it gates production:
 
 - Whether `maturityTime` must be capped at the batch expiry window

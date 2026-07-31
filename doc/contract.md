@@ -119,6 +119,13 @@ So: one VTXO, created by a transaction with two inputs, and spent as one input. 
 that last part — `OP_INSPECTNUMINPUTS` must equal 1 — so nobody can settle the contract alongside
 other money and blur whose sats went where.
 
+**Renewal moves that VTXO without changing it.** A contract inherits the batch expiry of whatever
+funded it, so a fixed-term contract can outlive the batch it lives in. Renewing is a batch swap that
+forfeits the contract through leaf 2 and recreates it at the same address for the same sats — same
+tree, same terms, new outpoint and a reset expiry. It needs both parties, arkd's fee paid from
+somebody else's coin, and afterwards a freshly signed exit package, because the old one commits to
+the outpoint that no longer exists. See [arkade-constraints](arkade-constraints.md).
+
 ## Taproot structure
 
 That single VTXO's output script is a taproot tree. Internal key = **NUMS** (Nothing Up My Sleeve)

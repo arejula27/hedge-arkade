@@ -28,6 +28,11 @@ type liveStack struct {
 	dust                uint64
 	checkpointTapscript string
 
+	// Where a forfeited VTXO goes, and the key the batch output is swept with.
+	// Both are needed to join a batch swap, which is how a contract is renewed.
+	forfeitAddress string
+	forfeitPubKey  *btcec.PublicKey
+
 	emulator emulatorclient.TransportClient
 	conn     *grpc.ClientConn
 }
@@ -71,6 +76,12 @@ func (s *liveStack) connect(ctx context.Context) error {
 	s.exitDelay = locktime(info.UnilateralExitDelay)
 	s.dust = info.Dust
 	s.checkpointTapscript = info.CheckpointTapscript
+	s.forfeitAddress = info.ForfeitAddress
+
+	s.forfeitPubKey, err = parseKey(info.ForfeitPubKey)
+	if err != nil {
+		return fmt.Errorf("arkd forfeit key: %w", err)
+	}
 
 	s.conn, err = grpc.NewClient(EmulatorURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
