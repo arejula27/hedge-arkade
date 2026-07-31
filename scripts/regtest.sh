@@ -16,6 +16,11 @@ DIR="${REGTEST_DIR:-.regtest}"
 # Deterministic tests: no background miner moving block height under us.
 export AUTOMINE_INTERVAL="${AUTOMINE_INTERVAL:-0}"
 
+# Batch expiry, in blocks. arkd reads any delay below 512 as blocks and any
+# above as seconds, and refuses to start if the delays disagree — the rest of
+# this stack is block-based, so this has to stay under 512.
+export ARKD_VTXO_TREE_EXPIRY="${ARKD_VTXO_TREE_EXPIRY:-400}"
+
 fetch() {
     if [ ! -d "$DIR/.git" ]; then
         git clone --depth 1 --branch "$REF" "$REPO" "$DIR"

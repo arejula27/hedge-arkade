@@ -20,14 +20,16 @@ for ordinary funds.
 
 | Fact | Value |
 |---|---|
-| Batch expiry | 180s (`ARKD_VTXO_TREE_EXPIRY`, overridable) |
+| Batch expiry | 400 **blocks** (`ARKD_VTXO_TREE_EXPIRY`; the stack ships 180) |
 | Session duration | 30s; rounds cycle roughly every 5s |
 | Scheduled sessions | none — batches form on demand |
 
+Delays are blocks below 512 and seconds above it, and arkd refuses to start if they disagree with
+each other — so this has to stay under 512 while the rest of the stack is block-based.
+
 **An Arkade transaction does not renew anything.** A contract VTXO funded from a party's VTXO
 expires at *exactly* the same instant as the VTXO it was funded from — it inherits its ancestor's
-batch expiry rather than starting its own. Measured: the funding VTXO and the contract VTXO created
-from it both expired at 19:49:20.
+batch expiry rather than starting its own.
 
 That matches the docs: renewal means participating in a **batch swap**, which "creates a fresh VTXO
 in a new batch with a reset expiry timer"
@@ -37,18 +39,25 @@ Note a conflict worth resolving before relying on either: the
 two-party channel VTXO renews when "either party submits an Arkade transaction attaching the channel
 VTXO to a new output", which our measurement does not support.
 
-### Blocker found while trying to implement renewal
+### Renewing needs the previous commitment confirmed
 
-**A second `Settle` from the same wallet hangs.** The first one works; the next one blocks inside
-`RegisterIntent` until the context expires, and arkd meanwhile cycles rounds aborting with
-`not enough intents registered 0/1` — so the intent never lands. It is not a mining problem (it
-hangs with and without a miner running) and not boarding-versus-VTXO (it hangs with a fresh boarding
-UTXO present too).
+A second batch swap from the same wallet appears to hang: `Settle` blocks and arkd cycles rounds
+aborting with `not enough intents registered 0/1`. The error it eventually reports —
+`failed to register intent: context deadline exceeded` — is the last retry hitting the deadline, not
+the cause. arkd's own log gives the real one:
 
-Nothing caught this before because every integration test creates a fresh party and funds it once.
-It blocks the easy path to renewal, since renewal *is* a batch swap. A hand-rolled implementation
-driving `RegisterIntent`/forfeits directly for the contract VTXO may sidestep it, but that is the
-full batch protocol — intent proof, tree nonces, tree signatures, forfeits — not a small piece.
+```
+method=/ark.v1.ArkService/RegisterIntent duration=23ms     <- the intent is accepted
+boarding input 0b4d6735...:1 is spent  intent_id=b95ed511  <- and then dropped
+```
+
+The first swap's commitment transaction is still in the mempool, because nothing mines unless a test
+asks. The boarding UTXO it spent therefore still looks unspent, the SDK includes it in the next
+intent, and arkd drops the intent for containing a spent input.
+
+**Mine after settling.** With the commitment confirmed, renewal takes about two seconds and the
+expiry resets. This is a property of a chain with no automatic mining, not a defect in arkd or the
+SDK.
 
 ### The design renewal would take
 
@@ -62,6 +71,12 @@ outpoint in the same ceremony. Arkade supports delegating renewal via presigned 
 giving up custody ([intent delegation](https://docs.arkadeos.com/arkd/components/intent-delegation)),
 which would fit the service, but the delegated forfeit is signed `SIGHASH_ALL | ANYONECANPAY` on a
 path the delegate is part of — worth checking against our leaf 2.
+
+Renewing the *contract* VTXO is the part that is not built. The SDK's `Settle` only swaps VTXOs the
+wallet owns, and its exported `RegisterIntent` signs the intent proof with the wallet's key, whereas
+a contract VTXO's proof has to be signed by the parties on leaf 2. Driving the rest — tree nonces,
+tree signatures, forfeits — is `handleBatchEvents`, which is unexported. So contract renewal means
+reimplementing batch participation with multi-party signing.
 
 Still unresolved, and it gates production:
 
