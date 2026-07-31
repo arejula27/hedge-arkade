@@ -143,8 +143,12 @@ all need real execution.
   (`closure.go`). `DecodeClosure` (`closure.go:31`) is a closed whitelist of 5 shapes — arkd
   classifies leaves, it does not merely verify them. `OP_CHECKMULTISIG` is separately disabled in
   tapscript by BIP342. m-of-n exists only *inside* a covenant, which an exit path does not have
-- **Ark requires seconds-based timelocks.** CLTV values must be Unix timestamps (>= 500,000,000);
-  CSV values must be multiples of 512 seconds. Block-based timelocks are rejected
+- **Timelock encoding is BIP68; the *type* is the operator's policy.** Seconds-based CSV values
+  must be multiples of 512, and CLTV values must be Unix timestamps (>= 500,000,000). Whether
+  block-based timelocks are accepted is a parameter arkd takes (`Validate(..., blockTypeAllowed)`):
+  production operators say no, the regtest stacks configure blocks so timelocks fire on mining.
+  `Contract.Validate` takes the flag; do not hardcode it — doing so made the contract untestable
+  against a standard regtest
 - **`cltv` and `csv` are mutually exclusive** in a single leaf
 - **Never trust a green compile.** Run it on the VM. And expected payouts go in the test table as
   constants — computing them in Go recreates the parallel implementation the covenant exists to be

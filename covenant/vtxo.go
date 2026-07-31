@@ -121,9 +121,9 @@ func (c Contract) Closures() ([]arkscript.Closure, error) {
 	if err := c.Terms.validate(); err != nil {
 		return nil, err
 	}
-	if c.ExitDelay.Type != arklib.LocktimeTypeSecond {
-		return nil, fmt.Errorf("exit delay must be seconds-based; block timelocks are rejected")
-	}
+	// Whether a block-based delay is acceptable is the operator's policy, not
+	// ours — arkd takes it as a parameter. All that has to hold here is that
+	// BIP68 can encode the value at all.
 	if _, err := arklib.BIP68Sequence(c.ExitDelay); err != nil {
 		return nil, fmt.Errorf("invalid exit delay: %w", err)
 	}
@@ -238,15 +238,16 @@ func (c Contract) leafIndex(leaf Leaf) (int, error) {
 }
 
 // Validate runs arkd's own acceptance check. minExitDelay is the operator's
-// getInfo().exitDelay. Block-type timelocks stay disallowed, matching a
-// mainnet operator's configuration.
+// getInfo().exitDelay, and allowBlockTimelocks is its policy on block-based
+// ones — false for a production operator, true for the regtest stacks that use
+// block delays so timelocks fire on mining instead of on the wall clock.
 //
 // Calling this before funding is the point: a script arkd would reject is a
 // contract nobody can exit.
-func (c Contract) Validate(minExitDelay arklib.RelativeLocktime) error {
+func (c Contract) Validate(minExitDelay arklib.RelativeLocktime, allowBlockTimelocks bool) error {
 	vtxo, err := c.VtxoScript()
 	if err != nil {
 		return err
 	}
-	return vtxo.Validate(c.Keys.ArkdSigner, minExitDelay, false)
+	return vtxo.Validate(c.Keys.ArkdSigner, minExitDelay, allowBlockTimelocks)
 }

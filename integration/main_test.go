@@ -90,6 +90,13 @@ func (s *liveStack) connect(ctx context.Context) error {
 	return nil
 }
 
+// allowsBlockTimelocks reads the operator's policy off its own exit delay. A
+// production operator configures seconds; the regtest stacks configure blocks so
+// timelocks fire on mining instead of on the wall clock.
+func (s *liveStack) allowsBlockTimelocks() bool {
+	return s.exitDelay.Type == arklib.LocktimeTypeBlock
+}
+
 // locktime interprets arkd's exit delay the way arkd itself does: a value at or
 // above 512 is seconds, anything below is blocks.
 func locktime(value int64) arklib.RelativeLocktime {

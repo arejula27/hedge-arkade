@@ -185,15 +185,32 @@ func TestSettlementKeyCommitsToTheScript(t *testing.T) {
 // arkd's own acceptance check. A script it would reject is a contract nobody
 // can exit, so this runs before anything is funded.
 func TestArkdAcceptsTheVtxoScript(t *testing.T) {
-	if err := contract().Validate(exitDelay); err != nil {
+	if err := contract().Validate(exitDelay, false); err != nil {
 		t.Fatalf("arkd rejected the script: %v", err)
 	}
 
 	// The operator's minimum is a lower bound, so a longer delay passes too.
 	longer := contract()
 	longer.ExitDelay = arklib.RelativeLocktime{Type: arklib.LocktimeTypeSecond, Value: 173_056}
-	if err := longer.Validate(exitDelay); err != nil {
+	if err := longer.Validate(exitDelay, false); err != nil {
 		t.Fatalf("arkd rejected a longer exit delay: %v", err)
+	}
+}
+
+// Whether a block-based delay is acceptable is the operator's policy. A
+// production operator refuses; the regtest stacks use them so timelocks fire on
+// mining rather than on the wall clock, and the contract has to work there too.
+func TestBlockTimelocksFollowTheOperatorsPolicy(t *testing.T) {
+	blocks := arklib.RelativeLocktime{Type: arklib.LocktimeTypeBlock, Value: 144}
+
+	c := contract()
+	c.ExitDelay = blocks
+
+	if err := c.Validate(blocks, false); err == nil {
+		t.Error("an operator that forbids block timelocks accepted one")
+	}
+	if err := c.Validate(blocks, true); err != nil {
+		t.Errorf("an operator that allows block timelocks rejected one: %v", err)
 	}
 }
 
@@ -221,7 +238,7 @@ func TestArkdRejectsAnExitDelayBelowItsMinimum(t *testing.T) {
 	c := contract()
 	c.ExitDelay = arklib.RelativeLocktime{Type: arklib.LocktimeTypeSecond, Value: 512}
 
-	if err := c.Validate(exitDelay); err == nil {
+	if err := c.Validate(exitDelay, false); err == nil {
 		t.Fatal("arkd accepted an exit delay below its minimum")
 	}
 }
@@ -229,9 +246,9 @@ func TestArkdRejectsAnExitDelayBelowItsMinimum(t *testing.T) {
 // Closures rejects what BIP68 cannot encode before arkd ever sees it.
 func TestExitDelayMustBeEncodable(t *testing.T) {
 	for name, delay := range map[string]arklib.RelativeLocktime{
-		"a block-based delay": {Type: arklib.LocktimeTypeBlock, Value: 144},
-		"not a multiple of 512": {
-			Type: arklib.LocktimeTypeSecond, Value: 86_400,
+		"seconds not a multiple of 512": {Type: arklib.LocktimeTypeSecond, Value: 86_400},
+		"seconds past the BIP68 ceiling": {
+			Type: arklib.LocktimeTypeSecond, Value: 1 << 30,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -484,7 +501,7 @@ func TestMutualRedemptionCanBeDisabled(t *testing.T) {
 		t.Fatalf("exit leaf decoded as %T, want a CSV multisig", closure)
 	}
 
-	if err := c.Validate(exitDelay); err != nil {
+	if err := c.Validate(exitDelay, false); err != nil {
 		t.Fatalf("arkd rejected a contract without mutual redemption: %v", err)
 	}
 }

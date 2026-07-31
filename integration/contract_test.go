@@ -72,7 +72,7 @@ func contract(t *testing.T) covenant.Contract {
 func TestTheRealOperatorWouldAcceptTheContract(t *testing.T) {
 	c := contract(t)
 
-	if err := c.Validate(stack.exitDelay); err != nil {
+	if err := c.Validate(stack.exitDelay, stack.allowsBlockTimelocks()); err != nil {
 		t.Fatalf("the live operator's rules reject this contract: %v", err)
 	}
 
@@ -87,14 +87,14 @@ func TestTheRealOperatorWouldAcceptTheContract(t *testing.T) {
 // undercut it. The unit test asserts this against a delay we made up; here the
 // bound is whatever the running arkd is configured with.
 func TestTheRealOperatorRejectsAShortExit(t *testing.T) {
-	if stack.exitDelay.Value <= 512 {
-		t.Skip("the operator's exit delay is already at the minimum encodable value")
+	if stack.exitDelay.Value <= 1 {
+		t.Skip("the operator's exit delay is already at the minimum")
 	}
 
 	c := contract(t)
-	c.ExitDelay = arklib.RelativeLocktime{Type: arklib.LocktimeTypeSecond, Value: 512}
+	c.ExitDelay = arklib.RelativeLocktime{Type: stack.exitDelay.Type, Value: 1}
 
-	if err := c.Validate(stack.exitDelay); err == nil {
+	if err := c.Validate(stack.exitDelay, stack.allowsBlockTimelocks()); err == nil {
 		t.Fatal("the live operator accepted an exit delay below its own minimum")
 	}
 }
