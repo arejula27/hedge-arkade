@@ -133,6 +133,10 @@ What it pins:
   leaves in turn**. The exit is the one that costs something: a taproot signature commits to the
   outpoint it spends, so renewal invalidates the pre-signed exit package and both parties have to
   sign a new one
+- **Three renewals in a row**, each landing somewhere new, and the covenant settling at the end. The
+  second is the one that matters: it starts from a VTXO a renewal created, whose ancestry is a batch
+  tree branch rather than an Arkade transaction — which is the state a contract is in for the rest
+  of its life
 
 Rejections here are asserted on bitcoind's reason, not merely on failure: `sendrawtransaction`
 reports RPC error -26 for a covenant doing its job and for a typo in the setup alike, so

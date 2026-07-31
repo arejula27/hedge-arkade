@@ -687,3 +687,37 @@ func TestARenewedContractStillExitsUnilaterally(t *testing.T) {
 		return fmt.Errorf("no output of %d sats at the sweep", want)
 	})
 }
+
+// Renewing once proves the mechanism; renewing repeatedly proves the contract
+// is not bounded by any batch at all.
+//
+// The second renewal is the one that matters most: it starts from a VTXO the
+// first one created, whose ancestry is a branch of a batch tree rather than an
+// Arkade transaction. That is the case a contract is in for the rest of its
+// life, and the first renewal does not exercise it. The third is there because
+// nothing should distinguish it from the second, and a chain that only survived
+// two hops would say otherwise.
+func TestAContractSurvivesSeveralRenewals(t *testing.T) {
+	c := contract(t)
+	p := newParty(t)
+	p.fund(t, boardedSats)
+
+	outpoint := fundContract(t, p, c)
+
+	seen := map[wire.OutPoint]bool{outpoint: true}
+	for round := 1; round <= 3; round++ {
+		outpoint = renew(t, p, c, outpoint, shortKey, longKey)
+		if seen[outpoint] {
+			t.Fatalf("renewal %d put the contract back where it already was", round)
+		}
+		seen[outpoint] = true
+		t.Logf("renewal %d: the contract is now at %s", round, outpoint)
+	}
+
+	// Still the contract it started as: same terms, same address, still exactly
+	// PayoutSats, and the covenant still settles it.
+	arkTx, checkpoints := settlementSpending(t, c, outpoint, shortPayout, longPayout)
+	if err := p.submitToEmulator(t, arkTx, checkpoints); err != nil {
+		t.Fatalf("the stack refused to settle a thrice-renewed contract: %v", err)
+	}
+}

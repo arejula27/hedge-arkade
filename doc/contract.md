@@ -119,12 +119,43 @@ So: one VTXO, created by a transaction with two inputs, and spent as one input. 
 that last part — `OP_INSPECTNUMINPUTS` must equal 1 — so nobody can settle the contract alongside
 other money and blur whose sats went where.
 
-**Renewal moves that VTXO without changing it.** A contract inherits the batch expiry of whatever
-funded it, so a fixed-term contract can outlive the batch it lives in. Renewing is a batch swap that
-forfeits the contract through leaf 2 and recreates it at the same address for the same sats — same
-tree, same terms, new outpoint and a reset expiry. It needs both parties, arkd's fee paid from
-somebody else's coin, and afterwards a freshly signed exit package, because the old one commits to
-the outpoint that no longer exists. See [arkade-constraints](arkade-constraints.md).
+## Renewal: the same contract, a later batch
+
+A contract inherits the batch expiry of whatever funded it, so a fixed-term contract can outlive the
+batch it lives in — and a VTXO whose batch has expired loses its unilateral route onchain. Renewal
+is a **batch swap**, not an Arkade transaction: it forfeits the contract and recreates it, same
+address and same sats, in a batch that expires later.
+
+```
+  RENEWAL — one intent, proved on leaf 3 by short + long
+
+     batch A                                            batch B
+     ─────────────────                                  ─────────────────
+     THE CONTRACT VTXO ──┐                          ┌──► THE CONTRACT VTXO
+       exactly payoutSats│   forfeit via leaf 2     │      exactly payoutSats
+       expires with A    │   (short + long + arkd)  │      expires with B
+                         ├──────  batch swap  ──────┤
+     somebody's coin  ───┤                          ├──► their change
+       pays arkd's fee   │                          │      coin − fee
+                         └──────────────────────────┘
+
+     same address, same tree, same terms — only the outpoint and the expiry move
+```
+
+Three things fall out of that picture:
+
+- **The amount is untouchable.** The covenant pins the settlement input at exactly `payoutSats`, so
+  arkd's fee cannot be taken off the contract — it would leave a VTXO leaf 1 can never settle. A
+  second input brings its own sats and takes its change back
+- **Leaf 2 is the forfeit path.** It is the one closure that is both a collaborative path and needs
+  nobody but the two owners and the operator. Leaf 1 would need the covenant executed to sign
+- **The pre-signed exit dies here.** A taproot signature commits to the outpoint it spends, and no
+  sighash flag changes that, so the package signed at funding is worthless the moment the contract
+  moves. Both parties have to sign a new one, against a VTXO whose identity nobody could know in
+  advance — which is the part of renewal that cannot be delegated
+
+See [arkade-constraints](arkade-constraints.md) for what was measured, and `integration/renewal_test.go`
+for the contract being created in one batch, renewed, and closed through each leaf.
 
 ## Taproot structure
 
