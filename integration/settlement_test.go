@@ -67,9 +67,11 @@ func TestTheStackRefusesAStolenSat(t *testing.T) {
 	outpoint := fundContract(t, p, c)
 	arkTx, checkpoints := settlementSpending(t, c, outpoint, shortPayout+1, longPayout-1)
 
-	if err := p.submitToEmulator(t, arkTx, checkpoints); err == nil {
+	err := p.submitToEmulator(t, arkTx, checkpoints)
+	if err == nil {
 		t.Fatal("the stack settled a transaction that moved a sat to the short")
 	}
+	t.Logf("rejected with: %v", err)
 }
 
 // The amounts are right and the recipient is not. Value conservation cannot
@@ -87,9 +89,11 @@ func TestTheStackRefusesARedirectedPayout(t *testing.T) {
 		{Value: longPayout, PkScript: thief},
 	})
 
-	if err := p.submitToEmulator(t, arkTx, checkpoints); err == nil {
+	err := p.submitToEmulator(t, arkTx, checkpoints)
+	if err == nil {
 		t.Fatal("the stack settled a payout to the wrong recipient")
 	}
+	t.Logf("rejected with: %v", err)
 }
 
 // fundContract spends the party's VTXO into the contract address with exactly

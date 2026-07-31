@@ -4,6 +4,7 @@ package integration
 
 import (
 	"encoding/hex"
+	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
@@ -77,12 +78,15 @@ func newParty(t *testing.T) *party {
 		t.Fatalf("key: %v", err)
 	}
 
+	// ExplorerURL is not optional on regtest: left empty the SDK falls back to
+	// mempool.space, which knows nothing about this chain.
 	if err := sdk.InitWithWallet(ctx, arksdk.InitWithWalletArgs{
-		Wallet:     walletSvc,
-		ClientType: arksdk.GrpcClient,
-		ServerUrl:  ArkdURL,
-		Password:   walletPassword,
-		Seed:       hex.EncodeToString(privKey.Serialize()),
+		Wallet:      walletSvc,
+		ClientType:  arksdk.GrpcClient,
+		ServerUrl:   ArkdURL,
+		Password:    walletPassword,
+		Seed:        hex.EncodeToString(privKey.Serialize()),
+		ExplorerURL: ExplorerURL,
 	}); err != nil {
 		t.Fatalf("InitWithWallet: %v", err)
 	}
@@ -128,17 +132,20 @@ func (p *party) fund(t *testing.T, sats int64) {
 	// The faucet confirms its own payment, but arkd's view of the chain lags it,
 	// and Settle has to wait for a batch to close. Retrying covers both.
 	var settleErr error
-	waitFor(t, 2*time.Minute, func() bool {
+	waitFor(t, 2*time.Minute, "Settle to succeed", func() error {
 		_, settleErr = p.sdk.Settle(ctx)
-		return settleErr == nil
+		return settleErr
 	})
-	if settleErr != nil {
-		t.Fatalf("Settle: %v", settleErr)
-	}
 
-	waitFor(t, 60*time.Second, func() bool {
+	waitFor(t, 60*time.Second, "a spendable VTXO to appear", func() error {
 		spendable, _, err := p.sdk.ListVtxos(ctx)
-		return err == nil && len(spendable) > 0
+		if err != nil {
+			return err
+		}
+		if len(spendable) == 0 {
+			return fmt.Errorf("no spendable VTXOs yet")
+		}
+		return nil
 	})
 }
 
@@ -149,19 +156,22 @@ func faucet(address, amountBtc string) (string, error) {
 	return string(out), err
 }
 
-// waitFor polls until cond is true or the budget runs out. arkd's view of the
-// chain lags the faucet, and settling is a batch that has to close.
-func waitFor(t *testing.T, budget time.Duration, cond func() bool) {
+// waitFor polls until attempt succeeds or the budget runs out, reporting the
+// last error rather than only that time ran out. arkd's view of the chain lags
+// the faucet, and settling is a batch that has to close.
+func waitFor(t *testing.T, budget time.Duration, what string, attempt func() error) {
 	t.Helper()
 
 	deadline := time.Now().Add(budget)
+	var last error
 	for time.Now().Before(deadline) {
-		if cond() {
+		last = attempt()
+		if last == nil {
 			return
 		}
-		time.Sleep(time.Second)
+		time.Sleep(2 * time.Second)
 	}
-	t.Fatalf("condition not met within %s", budget)
+	t.Fatalf("waited %s for %s; last error: %v", budget, what, last)
 }
 
 // sign signs the ark transaction and every checkpoint with the party's wallet.
@@ -221,17 +231,17 @@ func (p *party) submitToArkd(t *testing.T, arkTx *psbt.Packet, checkpoints []*ps
 	}
 
 	// arkd has to have registered the new VTXOs before anything can spend them.
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, 30*time.Second, "the new VTXOs to be registered", func() error {
 		spendable, _, err := p.sdk.ListVtxos(ctx)
 		if err != nil {
-			return false
+			return err
 		}
 		for _, v := range spendable {
 			if v.Txid == txid {
-				return true
+				return nil
 			}
 		}
-		return false
+		return fmt.Errorf("tx %s not among %d spendable VTXOs", txid, len(spendable))
 	})
 
 	return txid, nil

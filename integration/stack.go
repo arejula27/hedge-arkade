@@ -19,10 +19,14 @@ import (
 
 // Endpoints the regtest stack exposes. arkade-regtest publishes these on
 // localhost; override any of them for a stack that does not.
+//
+// The explorer URL has to include /api. Port 3000 serves the mempool web UI at
+// the root and the Esplora REST API underneath, so pointing at the root gets
+// HTML and the SDK fails with "invalid character '<'".
 var (
 	ArkdURL     = env("HEDGE_ARKD_URL", "localhost:7070")
 	EmulatorURL = env("HEDGE_EMULATOR_URL", "localhost:7073")
-	ExplorerURL = env("HEDGE_EXPLORER_URL", "http://localhost:3000")
+	ExplorerURL = env("HEDGE_EXPLORER_URL", "http://localhost:3000/api")
 )
 
 func env(name, fallback string) string {

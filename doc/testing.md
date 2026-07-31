@@ -70,10 +70,14 @@ For the taproot tree, without a running arkd:
 
 ## Tier 2 — the live stack
 
-`scripts/regtest.sh` clones [arkade-regtest](https://github.com/ArkLabsHQ/arkade-regtest) into
+`just regtest-up` clones [arkade-regtest](https://github.com/ArkLabsHQ/arkade-regtest) into
 `.regtest/` and starts its `emulator` profile: bitcoind, the indexers, arkd, arkd-wallet and the
 emulator. Boltz, LND, the solver and the web wallet are not needed to settle a covenant and are
 three more ways for CI to fail on something else. `AUTOMINE_INTERVAL=0` keeps block height still.
+
+The explorer URL must include `/api` — port 3000 serves the mempool web UI at the root and the
+Esplora REST API underneath — and it has to be passed to `InitWithWallet`, which otherwise falls
+back to mempool.space.
 
 Nothing about the contract is a constant the tests chose. The arkd signer key, the emulator signer
 key, the unilateral exit delay, the dust threshold and the checkpoint tapscript all come from the
