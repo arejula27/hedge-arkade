@@ -142,6 +142,32 @@ address and same sats, in a batch that expires later.
      same address, same tree, same terms — only the outpoint and the expiry move
 ```
 
+### What a forfeit is, and why it is leaf 2
+
+A batch swap is a trade: you give up the old VTXO, the operator gives you a new one in the new batch.
+The giving-up half is a **forfeit transaction** — it pays the old VTXO to the operator's forfeit
+address. On its own it is inert, because it also needs a *connector* input, an output that exists
+only in a batch that really created your new VTXO. So the operator cannot take the old contract
+without having already produced the new one. Signing a forfeit is not signing the money away.
+
+The forfeit has to be signed on a leaf, and only one of ours will do:
+
+| Leaf | Keys | Can it forfeit? |
+|---|---|---|
+| 1 — settlement | arkd + tweaked emulator key | **No.** The emulator only signs if the covenant passes, and the covenant demands the transaction pay `shortLockScript` and `longLockScript` exactly. A forfeit pays the operator |
+| 2 — mutual redemption | short + long + arkd | **Yes.** A plain 3-of-3. No covenant, no oracle, no constraint on the outputs |
+| 3 — exit | short + long, after a CSV | **No.** It carries no operator key, so it is not a collaborative path |
+
+**The covenant is not in the tree, and it is not in every leaf.** It lives in leaf 1 alone, and even
+there it is not script — it is a key, tweaked by the settlement script, that the emulator will only
+sign with once it has run that script and seen it pass. Leaf 2 has no such key. That is exactly why
+mutual redemption can pay any split the two of them agree, and exactly why it is the leaf a forfeit
+can go through.
+
+Leaf 3's role in renewal is a different artefact: it signs the **intent proof**, a BIP322 signature
+that proves who owns the coin and is never broadcast. Proof and forfeit are two separate things
+signed on two separate leaves.
+
 Three things fall out of that picture:
 
 - **The amount is untouchable.** The covenant pins the settlement input at exactly `payoutSats`, so
