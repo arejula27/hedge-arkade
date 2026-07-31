@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -150,7 +151,20 @@ func (p *party) fund(t *testing.T, sats int64) {
 }
 
 func faucet(address, amountBtc string) (string, error) {
-	cmd := exec.Command("./scripts/regtest.sh", "faucet", address, amountBtc)
+	return regtest("faucet", address, amountBtc)
+}
+
+// mine advances the chain. AUTOMINE_INTERVAL is 0, so height only moves when a
+// test asks it to — which is what makes a relative timelock testable.
+func mine(t *testing.T, blocks int) {
+	t.Helper()
+	if out, err := regtest("mine", strconv.Itoa(blocks)); err != nil {
+		t.Fatalf("mining %d blocks: %v\n%s", blocks, err, out)
+	}
+}
+
+func regtest(args ...string) (string, error) {
+	cmd := exec.Command("./scripts/regtest.sh", args...)
 	cmd.Dir = ".."
 	out, err := cmd.CombinedOutput()
 	return string(out), err

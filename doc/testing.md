@@ -9,6 +9,10 @@ Two tiers.
 | VM | in process, synthetic transaction | the real emulator over gRPC |
 | Catches | arithmetic, the clamp, timing, recipients, exact values | transaction shape, the emulator packet, protocol drift |
 
+The exit leaf is the exception to both rows. It has no Arkade opcodes in it — a CSV and a 2-of-2 —
+so tier 1 runs it through btcd's own consensus engine instead of the Arkade VM, and tier 2 puts it
+in front of bitcoind rather than the emulator.
+
 The split matters because the first tier builds its own transaction, so it cannot see anything
 about the shape a real one has. That is not hypothetical: a `numOutputs == 2` check passed the
 entire unit suite and would have rejected every settlement in production, because an Arkade
@@ -68,6 +72,17 @@ For the taproot tree, without a running arkd:
 - The tweaked key in leaf 1 is the one the emulator's `ReadArkadeScript` will look for
 - A golden hex fixture of the scriptPubKey
 
+For the pre-signed exit, through btcd's consensus engine:
+
+- The finalised witness spends the contract, with and without the mutual-redemption leaf — so the
+  signature order and the control block are right at either index
+- It is refused a step below the delay, at no delay, and with the delay disabled
+- It is refused when the destination is redirected, the fee raised, a second output added, the input
+  repointed, or the amount signed over is not the amount held
+- Both parties have to sign: missing, swapped, garbage, and a stranger's signature all fail
+- Any two of the three can spend the sweep afterwards, and no one of them can alone
+- Every key changes the sweep address, and swapping the parties changes it too
+
 ## Tier 2 — the live stack
 
 `just regtest-up` clones [arkade-regtest](https://github.com/ArkLabsHQ/arkade-regtest) into
@@ -94,6 +109,18 @@ What it pins:
   faucet, settle into a VTXO, spend it into the contract address with exactly `payoutSats`, then
   settle the contract
 - It refuses a sat moved to the short, and a redirected payout
+- **A unilateral exit that really leaves Arkade**: fund the contract address from the faucet,
+  pre-sign, watch bitcoind refuse it while the delay runs, mine past the delay, broadcast, and find
+  the money in the 2-of-3. Neither arkd nor the emulator is involved, which is the point
+
+Rejections here are asserted on bitcoind's reason, not merely on failure: `sendrawtransaction`
+reports RPC error -26 for a covenant doing its job and for a typo in the setup alike, so
+`scripts/regtest.sh testaccept` asks `testmempoolaccept` why. `non-BIP68-final` for an exit
+broadcast early, `Invalid Schnorr signature` for one rewritten after signing.
+
+The exit tests generate fresh party keys rather than using the fixed ones. They settle on a chain
+that survives between runs, and a leftover output at a shared contract address would make two runs
+read each other's state. The address is logged, so a failure is still traceable.
 
 **The emulator is the entry point, not arkd.** A covenant spend goes to the emulator, which parses
 the emulator packet, matches the tweaked key against the leaf, executes the script, signs, and
@@ -111,8 +138,10 @@ script against it happily and then arkd would reject a VTXO that never existed.
 | `covenant/settlement.go` | `Terms` and `SettlementScript()` |
 | `covenant/oracle.go` | Message layout and the signing the oracle service will do |
 | `covenant/vtxo.go` | `Contract`: the three leaves, the taproot tree, control blocks, arkd validation |
+| `covenant/exit.go` | The 2-of-3 sweep and the pre-signed exit package |
 | `covenant/vm.go` | `ArkPrevOutFetcher`, the synthetic spending transaction, and `Run` |
 | `integration/stack.go` | Endpoints and the wait-for-ready loop |
 | `integration/main_test.go` | Reads both services' `GetInfo` into the fixture |
 | `integration/wallet_test.go` | A party with a real wallet: board, settle, sign, submit |
 | `integration/settlement_test.go` | Funds the contract and settles it through the stack |
+| `integration/exit_test.go` | Exits the contract onto the chain, with no service involved |

@@ -48,8 +48,15 @@ case "${1:-}" in
     mine)
         ( cd "$DIR" && node regtest.mjs mine "${2:-1}" )
         ;;
+    # testaccept <rawtxhex> — asks bitcoind why it would refuse a transaction.
+    # Broadcasting only reports RPC error -26, so a rejection test that stopped
+    # there could not tell the covenant's own refusal from a typo in the setup.
+    testaccept)
+        docker exec bitcoin bitcoin-cli -regtest -rpcuser=admin1 -rpcpassword=123 \
+            testmempoolaccept "[\"$2\"]"
+        ;;
     *)
-        echo "usage: $0 {up|down|clean|logs|faucet <addr> <btc>|mine [n]}" >&2
+        echo "usage: $0 {up|down|clean|logs|faucet <addr> <btc>|mine [n]|testaccept <hex>}" >&2
         exit 64
         ;;
 esac

@@ -43,7 +43,10 @@ longSats     = payoutSats - shortSats
 ```
 
 Three taproot leaves: settlement (covenant), mutual redemption (both parties), and a CSV emergency
-exit. Only the exit touches Bitcoin; the other two resolve offchain.
+exit. Only the exit touches Bitcoin; the other two resolve offchain. The exit transaction is
+pre-signed by both parties at funding and sweeps to a 2-of-3, so either side can leave alone if the
+operator stops answering, and neither can leave with the other's collateral —
+[doc/unilateral-exit.md](doc/unilateral-exit.md).
 
 The contract needs no clock. Settlement requires the oracle message *and its immediate
 predecessor*, which pins it to the first message published after maturity; and liquidation prices
