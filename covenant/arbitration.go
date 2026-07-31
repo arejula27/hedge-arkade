@@ -164,13 +164,13 @@ func scaleToAvailable(short, long, owed, payable int64) (int64, int64, error) {
 	return scaledShort, payable - scaledShort, nil
 }
 
-// Verify is what a party runs before signing: recompute the whole proposal from
+// VerifyArbitration is what a party runs before signing: recompute the whole proposal from
 // the oracle's own bytes and require the transaction to match to the sat.
 //
 // The point of the 2-of-3 is that the service cannot move the money alone. That
 // is only worth anything if the party's signature means something, and it only
 // means something if the party checks first.
-func (c Contract) Verify(a *Arbitration, sweep *Sweep, available, feeSats int64) error {
+func (c Contract) VerifyArbitration(a *Arbitration, sweep *Sweep, available, feeSats int64) error {
 	if a == nil || a.Tx == nil {
 		return fmt.Errorf("no arbitration to verify")
 	}

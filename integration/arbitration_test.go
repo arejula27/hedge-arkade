@@ -146,7 +146,7 @@ func TestTheServiceArbitratesAfterAnExit(t *testing.T) {
 		proposal.ShortSats, proposal.LongSats, proposal.Price)
 
 	// The party checks it before putting its key anywhere near it.
-	if err := c.Verify(proposal, sweep, available, arbitrationFeeSats); err != nil {
+	if err := c.VerifyArbitration(proposal, sweep, available, arbitrationFeeSats); err != nil {
 		t.Fatalf("the party refused a proposal it should have accepted: %v", err)
 	}
 
@@ -204,7 +204,7 @@ func TestTheServiceCannotArbitrateAlone(t *testing.T) {
 		Tx: stolen, ShortSats: stolen.TxOut[0].Value, LongSats: stolen.TxOut[1].Value,
 		Message: msg, Signature: sig,
 	}
-	if err := c.Verify(theft, sweep, available, arbitrationFeeSats); err == nil {
+	if err := c.VerifyArbitration(theft, sweep, available, arbitrationFeeSats); err == nil {
 		t.Fatal("a party would have signed the service paying itself")
 	}
 }

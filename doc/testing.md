@@ -116,6 +116,8 @@ What it pins:
   settlement of it, because conservation of value forces the extra sat into one of the two payouts
 - **Mutual redemption**, leaf 2: a real contract closed early at an arbitrary split, and refused
   when only one party signs
+- **An early close nobody built by hand**: the service proposes it from an oracle-signed price, each
+  party rebuilds it from the contract and refuses anything that does not match, and both sign
 - **A unilateral exit that really leaves Arkade**: pre-sign, watch bitcoind refuse it while the
   delay runs, mine past the delay, broadcast, and find the money in the 2-of-3. Neither arkd nor
   the emulator is involved, which is the point
@@ -176,6 +178,8 @@ script against it happily and then arkd would reject a VTXO that never existed.
 | `covenant/oracle.go` | Message layout and the signing the oracle service will do |
 | `covenant/vtxo.go` | `Contract`: the three leaves, the taproot tree, control blocks, arkd validation |
 | `covenant/exit.go` | The 2-of-3 sweep and the pre-signed exit package |
+| `covenant/redemption.go` | Leaf 2: building, verifying and signing an early close |
+| `covenant/arbitration.go` | Leaf 3's second half: splitting the money after an exit |
 | `covenant/vm.go` | `ArkPrevOutFetcher`, the synthetic spending transaction, and `Run` |
 | `integration/stack.go` | Endpoints and the wait-for-ready loop |
 | `integration/main_test.go` | Reads both services' `GetInfo` into the fixture |

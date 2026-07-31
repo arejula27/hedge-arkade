@@ -204,7 +204,7 @@ func TestAPartyVerifiesBeforeSigning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Arbitrate: %v", err)
 	}
-	if err := c.Verify(honest, s, available, fee); err != nil {
+	if err := c.VerifyArbitration(honest, s, available, fee); err != nil {
 		t.Fatalf("an honest arbitration did not verify: %v", err)
 	}
 
@@ -240,7 +240,7 @@ func TestAPartyVerifiesBeforeSigning(t *testing.T) {
 			}
 			tc.tamper(tampered)
 
-			if err := c.Verify(tampered, s, available, fee); err == nil {
+			if err := c.VerifyArbitration(tampered, s, available, fee); err == nil {
 				t.Fatal("a party would have signed a doctored arbitration")
 			}
 		})
@@ -271,7 +271,7 @@ func TestVerifyCatchesADifferentPrice(t *testing.T) {
 	}
 
 	doctored.Message, doctored.Signature = honestMsg, honestSig
-	if err := c.Verify(doctored, s, available, fee); err == nil {
+	if err := c.VerifyArbitration(doctored, s, available, fee); err == nil {
 		t.Fatal("a party would have signed amounts the quoted price does not produce")
 	}
 }

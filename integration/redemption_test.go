@@ -3,19 +3,15 @@
 package integration
 
 import (
-	"bytes"
 	"strings"
 	"testing"
 
 	"github.com/arejula27/hedge/covenant"
 	"github.com/arkade-os/arkd/pkg/ark-lib/offchain"
-	arkscript "github.com/arkade-os/arkd/pkg/ark-lib/script"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcwallet/waddrmgr"
 )
 
 // Leaf 2, mutual redemption: both parties agree to close early at whatever
@@ -27,63 +23,17 @@ import (
 // not theirs — so the signatures are added with the raw keys, the way the
 // service will have to add them.
 
-// signWithKey adds a tapscript signature to every input whose revealed leaf
-// contains the key, and returns the packet base64-encoded.
+// signWithKey signs a packet with a key no wallet holds, and returns it
+// encoded.
 //
-// This is what `singlekeywallet` does internally (`bitcoin_wallet.go:255`),
-// reproduced because the contract's keys do not live in an SDK wallet. Leaves
-// the key is not part of are skipped, so the same call works on the ark
-// transaction and on the checkpoints.
+// The signing itself is `covenant.SignTapscript`: it is what the service will
+// run in production, so having the tests exercise anything else would leave the
+// real thing untested.
 func signWithKey(t *testing.T, packet *psbt.Packet, key *btcec.PrivateKey) string {
 	t.Helper()
 
-	mine := schnorr.SerializePubKey(key.PubKey())
-
-	prevOuts := txscript.NewMultiPrevOutFetcher(nil)
-	for i, in := range packet.Inputs {
-		if in.WitnessUtxo == nil {
-			t.Fatalf("input %d has no witness utxo", i)
-		}
-		prevOuts.AddPrevOut(packet.UnsignedTx.TxIn[i].PreviousOutPoint, in.WitnessUtxo)
-	}
-	sigHashes := txscript.NewTxSigHashes(packet.UnsignedTx, prevOuts)
-
-	signed := 0
-	for i, in := range packet.Inputs {
-		for _, leaf := range in.TaprootLeafScript {
-			if !leafHasKey(leaf.Script, mine) {
-				continue
-			}
-
-			digest, err := txscript.CalcTapscriptSignaturehash(
-				sigHashes, in.SighashType, packet.UnsignedTx, i, prevOuts,
-				txscript.NewBaseTapLeaf(leaf.Script),
-			)
-			if err != nil {
-				t.Fatalf("sighash for input %d: %v", i, err)
-			}
-
-			sig, err := schnorr.Sign(key, digest)
-			if err != nil {
-				t.Fatalf("signing input %d: %v", i, err)
-			}
-
-			hash := txscript.NewTapLeaf(leaf.LeafVersion, leaf.Script).TapHash()
-			packet.Inputs[i].TaprootScriptSpendSig = append(
-				packet.Inputs[i].TaprootScriptSpendSig,
-				&psbt.TaprootScriptSpendSig{
-					XOnlyPubKey: mine,
-					LeafHash:    hash.CloneBytes(),
-					Signature:   sig.Serialize(),
-					SigHash:     in.SighashType,
-				},
-			)
-			signed++
-		}
-	}
-
-	if signed == 0 {
-		t.Fatalf("key %x signs none of the revealed leaves", mine)
+	if err := covenant.SignTapscript(key, packet); err != nil {
+		t.Fatalf("signing with %x: %v", schnorr.SerializePubKey(key.PubKey()), err)
 	}
 
 	encoded, err := packet.B64Encode()
@@ -93,34 +43,6 @@ func signWithKey(t *testing.T, packet *psbt.Packet, key *btcec.PrivateKey) strin
 	return encoded
 }
 
-// leafHasKey reports whether the closure names the key, using arkd's own
-// decoder so an unrecognisable leaf is skipped rather than guessed at.
-func leafHasKey(leaf, xOnlyKey []byte) bool {
-	closure, err := arkscript.DecodeClosure(leaf)
-	if err != nil {
-		return false
-	}
-
-	var keys []*btcec.PublicKey
-	switch c := closure.(type) {
-	case *arkscript.MultisigClosure:
-		keys = c.PubKeys
-	case *arkscript.CSVMultisigClosure:
-		keys = c.PubKeys
-	case *arkscript.CLTVMultisigClosure:
-		keys = c.PubKeys
-	default:
-		return false
-	}
-
-	for _, key := range keys {
-		if bytes.Equal(schnorr.SerializePubKey(key), xOnlyKey) {
-			return true
-		}
-	}
-	return false
-}
-
 // redemptionInput points at the contract VTXO and reveals the mutual
 // redemption leaf.
 func redemptionInput(
@@ -128,32 +50,12 @@ func redemptionInput(
 ) offchain.VtxoInput {
 	t.Helper()
 
-	proof, err := c.Tapscript(covenant.LeafMutualRedemption)
+	input, err := c.RedemptionInput(outpoint)
 	if err != nil {
-		t.Fatalf("Tapscript: %v", err)
+		t.Fatalf("RedemptionInput: %v", err)
 	}
-	control, err := txscript.ParseControlBlock(proof.ControlBlock)
-	if err != nil {
-		t.Fatalf("ParseControlBlock: %v", err)
-	}
-	vtxo, err := c.VtxoScript()
-	if err != nil {
-		t.Fatalf("VtxoScript: %v", err)
-	}
-	revealed, err := vtxo.Encode()
-	if err != nil {
-		t.Fatalf("Encode: %v", err)
-	}
-
-	return offchain.VtxoInput{
-		Outpoint: &outpoint,
-		Tapscript: &waddrmgr.Tapscript{
-			ControlBlock:   control,
-			RevealedScript: proof.Script,
-		},
-		Amount:             amount,
-		RevealedTapscripts: revealed,
-	}
+	input.Amount = amount
+	return input
 }
 
 // redeem builds the mutual-redemption spend and submits it with the signatures
@@ -264,4 +166,81 @@ func TestTheStackRefusesAOneSidedRedemption(t *testing.T) {
 			t.Logf("rejected with: %v", err)
 		})
 	}
+}
+
+// The flow a user will actually see: the service builds the early close, each
+// party verifies it against the contract, and both sign. Nothing here builds a
+// transaction by hand.
+//
+// `redeem` above proves the leaf works; this proves the code that will be
+// shipped works, which is not the same claim. The proposal is oracle-priced
+// because that is the case with something to verify — a split the parties
+// simply agreed on has nothing to check it against.
+func TestThePartiesSignAnEarlyCloseTheyDidNotBuild(t *testing.T) {
+	c := contract(t)
+	p := newParty(t)
+	p.fund(t, boardedSats)
+
+	outpoint := fundContract(t, p, c)
+
+	message, signature := signedPrice(t, settlementPrice)
+
+	// The service proposes.
+	r, err := c.ProposeRedemptionAt(outpoint, checkpointTapscript(t), message, signature)
+	if err != nil {
+		t.Fatalf("ProposeRedemptionAt: %v", err)
+	}
+	t.Logf("proposed %d/%d at price %d", r.ShortSats, r.LongSats, r.Price)
+
+	// Each party checks before signing. A party that skips this is trusting
+	// whoever proposed, which is the thing the design refuses to require.
+	for _, side := range []string{"short", "long"} {
+		if err := c.VerifyRedemption(r, outpoint, checkpointTapscript(t)); err != nil {
+			t.Fatalf("the %s would refuse a correct proposal: %v", side, err)
+		}
+	}
+
+	for _, key := range []*btcec.PrivateKey{shortKey, longKey} {
+		if err := covenant.SignRedemption(key, r); err != nil {
+			t.Fatalf("SignRedemption: %v", err)
+		}
+	}
+
+	if err := submitRedemption(t, p, r, shortKey, longKey); err != nil {
+		t.Fatalf("the stack refused an early close both parties signed: %v", err)
+	}
+}
+
+// submitRedemption hands a signed early close to arkd and finalises it.
+//
+// The wallet signs nothing on leaf 2 — it holds none of the contract's keys —
+// but it is still the transport, and arkd re-verifies every key in the revealed
+// leaf on the checkpoints it hands back (`service.go:1236`), so the contract's
+// keys sign that round too.
+func submitRedemption(
+	t *testing.T, p *party, r *covenant.Redemption, signers ...*btcec.PrivateKey,
+) error {
+	t.Helper()
+	ctx := t.Context()
+
+	signedArkTx, signedCheckpoints := p.sign(t, r.ArkTx, r.Checkpoints)
+
+	txid, _, returned, err := p.arkd.SubmitTx(ctx, signedArkTx, signedCheckpoints)
+	if err != nil {
+		return err
+	}
+
+	final := make([]string, 0, len(returned))
+	for _, checkpoint := range returned {
+		packet, err := psbt.NewFromRawBytes(strings.NewReader(checkpoint), true)
+		if err != nil {
+			t.Fatalf("decoding a returned checkpoint: %v", err)
+		}
+		encoded := checkpoint
+		for _, key := range signers {
+			encoded = signWithKey(t, packet, key)
+		}
+		final = append(final, encoded)
+	}
+	return p.arkd.FinalizeTx(ctx, txid, final)
 }
