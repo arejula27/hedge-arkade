@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -46,13 +47,23 @@ func unroll(t *testing.T, p *party, outpoint wire.OutPoint) int {
 	mine(t, 1)
 
 	published := 0
-	for {
+	for step := 0; step < 40; step++ {
 		next, err := branch.NextRedeemTx()
 		if err != nil {
 			// The branch reports this once every transaction is onchain.
 			if strings.Contains(err.Error(), "already redeemed") {
 				return published
 			}
+
+			// Something in the branch is in the mempool waiting for a block.
+			// Waiting is the whole answer — it is what a party unrolling for
+			// real would do, and here waiting means mining.
+			var pending redemption.ErrPendingConfirmation
+			if errors.As(err, &pending) {
+				mine(t, 1)
+				continue
+			}
+
 			t.Fatalf("next transaction to unroll: %v", err)
 		}
 
@@ -60,11 +71,10 @@ func unroll(t *testing.T, p *party, outpoint wire.OutPoint) int {
 			t.Fatalf("mining an unroll transaction: %v\n%s", err, out)
 		}
 		published++
-
-		if published > 20 {
-			t.Fatal("the chain did not bottom out after 20 transactions")
-		}
 	}
+
+	t.Fatal("the chain did not bottom out")
+	return 0
 }
 
 // The whole unilateral exit with nothing skipped: fund the contract as a real

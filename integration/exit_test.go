@@ -335,6 +335,11 @@ func TestTheChainRefusesARewrittenExit(t *testing.T) {
 	waitFor(t, 60*time.Second, "the chain to accept the untouched exit", func() error {
 		return broadcast(t, e, signed)
 	})
+
+	// Confirm it rather than leaving it in the mempool. A later test reading
+	// its own branch cannot tell someone else's pending transaction from one of
+	// its own, and stalls waiting for it.
+	mine(t, 1)
 }
 
 // sweepKey recovers the sweep's output key so it can be rendered as an address.
