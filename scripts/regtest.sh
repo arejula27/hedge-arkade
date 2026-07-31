@@ -25,10 +25,38 @@ fetch() {
     git -C "$DIR" checkout -q FETCH_HEAD
 }
 
+bitcoin_cli() {
+    docker exec bitcoin bitcoin-cli -regtest -rpcuser=admin1 -rpcpassword=123 "$@"
+}
+
+# Load a wallet that exists on disk but is not loaded.
+#
+# Upstream's bootstrapChain waits for the image to auto-load a wallet and
+# otherwise creates one, but it never loads an existing one. That is fine on a
+# clean volume and wedges every restart after `down`, which keeps the data:
+# bitcoind loads nothing, `createwallet` fails because the wallet is already
+# there, and the start times out on "Bitcoin Core wallet (created)".
+load_existing_wallet() {
+    [ "$(bitcoin_cli listwallets 2>/dev/null | tr -d '[:space:]')" = "[]" ] || return 1
+
+    local name
+    name=$(bitcoin_cli listwalletdir 2>/dev/null \
+        | grep -o '"name": *"[^"]*"' | head -1 | sed 's/.*: *"\(.*\)"/\1/')
+    [ -n "$name" ] || return 1
+
+    echo "loading existing bitcoind wallet '$name'" >&2
+    bitcoin_cli loadwallet "$name" >/dev/null 2>&1
+}
+
 case "${1:-}" in
     up)
         fetch
-        ( cd "$DIR" && node regtest.mjs start --profile emulator )
+        if ! ( cd "$DIR" && node regtest.mjs start --profile emulator ); then
+            # bitcoind is running by the time the wallet step fails, so the
+            # wallet can be loaded now and the start resumed.
+            load_existing_wallet || exit 1
+            ( cd "$DIR" && node regtest.mjs start --profile emulator )
+        fi
         ;;
     down)
         [ -d "$DIR" ] && ( cd "$DIR" && node regtest.mjs stop ) || true
