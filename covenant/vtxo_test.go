@@ -551,3 +551,75 @@ func TestPkScriptIsStable(t *testing.T) {
 		t.Fatalf("scriptPubKey changed:\n got %x\nwant %s", got, want)
 	}
 }
+
+// Renewing a VTXO means forfeiting it: handing it to the operator in exchange
+// for a fresh one in a new batch. The forfeit is an ordinary transaction paying
+// the operator's forfeit address, so it has to be signable on one of the tree's
+// forfeit closures.
+//
+// Leaf 1 is a forfeit closure by shape and useless for this. Its second key is
+// the emulator's, tweaked by the settlement script, and the emulator only signs
+// once that script has run and passed — and the script demands the transaction
+// pay ShortLockScript and LongLockScript exactly. A forfeit pays neither.
+//
+// So renewability rests entirely on leaf 2 being covenant-free, and this is the
+// test that says so. If it ever failed, contracts would be silently bounded by
+// the batch that funded them.
+func TestOnlyMutualRedemptionCanSignAForfeit(t *testing.T) {
+	c := contract()
+
+	vtxo, err := c.VtxoScript()
+	if err != nil {
+		t.Fatalf("VtxoScript: %v", err)
+	}
+
+	signable := 0
+	for _, closure := range vtxo.ForfeitClosures() {
+		multisig, ok := closure.(*arkscript.MultisigClosure)
+		if !ok {
+			continue
+		}
+		if namesBoth(multisig.PubKeys, c.Keys.Short, c.Keys.Long) {
+			signable++
+		}
+	}
+
+	if signable != 1 {
+		t.Fatalf("got %d forfeit closures the parties can sign, want exactly 1 "+
+			"(mutual redemption); the contract cannot be renewed without one", signable)
+	}
+}
+
+// Disabling mutual redemption is not only a missing leaf: it removes the only
+// path a forfeit can be signed on, so the contract cannot be renewed and dies
+// with the batch that funded it. That is a real trade, and it should be a
+// deliberate one rather than a surprise.
+func TestWithoutMutualRedemptionNothingCanSignAForfeit(t *testing.T) {
+	c := contract()
+	c.EnableMutualRedemption = false
+
+	vtxo, err := c.VtxoScript()
+	if err != nil {
+		t.Fatalf("VtxoScript: %v", err)
+	}
+
+	for _, closure := range vtxo.ForfeitClosures() {
+		multisig, ok := closure.(*arkscript.MultisigClosure)
+		if !ok {
+			continue
+		}
+		if namesBoth(multisig.PubKeys, c.Keys.Short, c.Keys.Long) {
+			t.Fatal("a forfeit closure the parties can sign appeared without leaf 2")
+		}
+	}
+}
+
+func namesBoth(keys []*btcec.PublicKey, short, long *btcec.PublicKey) bool {
+	found := 0
+	for _, k := range keys {
+		if xonly(k) == xonly(short) || xonly(k) == xonly(long) {
+			found++
+		}
+	}
+	return found == 2
+}

@@ -168,6 +168,18 @@ Leaf 3's role in renewal is a different artefact: it signs the **intent proof**,
 that proves who owns the coin and is never broadcast. Proof and forfeit are two separate things
 signed on two separate leaves.
 
+**So `enableMutualRedemption` is no longer only about mutual redemption.** Switching it off drops
+leaf 2, which leaves no closure a forfeit can be signed on, which means the contract cannot be
+renewed and is bounded by the batch that funded it. AnyHedge's flag was about closing early at a
+price no oracle supports; on Arkade the same flag decides whether a contract can outlive its batch.
+That is a real trade and it should be a deliberate one, so it is pinned by
+`TestOnlyMutualRedemptionCanSignAForfeit`.
+
+The general rule this is an instance of: **an Arkade contract that has to be renewable needs at
+least one covenant-free collaborative leaf.** A tree whose every collaborative path runs a covenant
+cannot be handed to the operator, because a forfeit pays the operator and no useful covenant permits
+that.
+
 Three things fall out of that picture:
 
 - **The amount is untouchable.** The covenant pins the settlement input at exactly `payoutSats`, so
