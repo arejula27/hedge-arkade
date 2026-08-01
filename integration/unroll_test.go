@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/arejula27/hedge/covenant"
+	"github.com/arejula27/hedge/contract"
 	"github.com/arkade-os/go-sdk/explorer"
 	"github.com/arkade-os/go-sdk/redemption"
 	"github.com/arkade-os/go-sdk/types"
@@ -146,7 +146,7 @@ func TestAPartyCanUnrollAndExitWithoutTheOperator(t *testing.T) {
 // outputIsOnchain reports whether the contract's own output is a spendable UTXO
 // on the chain, which is what unrolling was for.
 func outputIsOnchain(
-	t *testing.T, e explorer.Explorer, c covenant.Contract, outpoint wire.OutPoint,
+	t *testing.T, e explorer.Explorer, c contract.Contract, outpoint wire.OutPoint,
 ) error {
 	t.Helper()
 

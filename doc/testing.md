@@ -2,7 +2,7 @@
 
 Two tiers.
 
-| | `covenant/` | `integration/` |
+| | `contract/` | `integration/` |
 |---|---|---|
 | Runs | `just check` | `just test-integration` |
 | Needs | nothing | Docker, a live stack |
@@ -18,7 +18,7 @@ about the shape a real one has. That is not hypothetical: a `numOutputs == 2` ch
 entire unit suite and would have rejected every settlement in production, because an Arkade
 transaction also carries the emulator packet and a P2A anchor.
 
-`integration/` is a separate Go module. `covenant/` has three direct dependencies and is what the
+`integration/` is a separate Go module. `contract/` has three direct dependencies and is what the
 TypeScript verifier is pinned to; the client SDK and the emulator client belong nowhere near it.
 Everything there is behind the `integration` build tag, so a machine without Docker is unaffected.
 
@@ -174,13 +174,13 @@ script against it happily and then arkd would reject a VTXO that never existed.
 
 | File | What |
 |---|---|
-| `covenant/settlement.go` | `Terms` and `SettlementScript()` |
-| `covenant/oracle.go` | Message layout and the signing the oracle service will do |
-| `covenant/vtxo.go` | `Contract`: the three leaves, the taproot tree, control blocks, arkd validation |
-| `covenant/exit.go` | The 2-of-3 sweep and the pre-signed exit package |
-| `covenant/redemption.go` | Leaf 2: building, verifying and signing an early close |
-| `covenant/arbitration.go` | Leaf 3's second half: splitting the money after an exit |
-| `covenant/vm.go` | `ArkPrevOutFetcher`, the synthetic spending transaction, and `Run` |
+| `contract/settlement.go` | `Terms` and `SettlementScript()` |
+| `contract/oracle.go` | Message layout and the signing the oracle service will do |
+| `contract/vtxo.go` | `Contract`: the three leaves, the taproot tree, control blocks, arkd validation |
+| `contract/exit.go` | The 2-of-3 sweep and the pre-signed exit package |
+| `contract/redemption.go` | Leaf 2: building, verifying and signing an early close |
+| `contract/arbitration.go` | Leaf 3's second half: splitting the money after an exit |
+| `contract/vm.go` | `ArkPrevOutFetcher`, the synthetic spending transaction, and `Run` |
 | `integration/stack.go` | Endpoints and the wait-for-ready loop |
 | `integration/main_test.go` | Reads both services' `GetInfo` into the fixture |
 | `integration/wallet_test.go` | A party with a real wallet: board, settle, sign, submit |

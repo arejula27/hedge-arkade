@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/arejula27/hedge/covenant"
+	"github.com/arejula27/hedge/contract"
 	"github.com/arkade-os/arkd/pkg/ark-lib/offchain"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
@@ -26,13 +26,13 @@ import (
 // signWithKey signs a packet with a key no wallet holds, and returns it
 // encoded.
 //
-// The signing itself is `covenant.SignTapscript`: it is what the service will
+// The signing itself is `contract.SignTapscript`: it is what the service will
 // run in production, so having the tests exercise anything else would leave the
 // real thing untested.
 func signWithKey(t *testing.T, packet *psbt.Packet, key *btcec.PrivateKey) string {
 	t.Helper()
 
-	if err := covenant.SignTapscript(key, packet); err != nil {
+	if err := contract.SignTapscript(key, packet); err != nil {
 		t.Fatalf("signing with %x: %v", schnorr.SerializePubKey(key.PubKey()), err)
 	}
 
@@ -46,7 +46,7 @@ func signWithKey(t *testing.T, packet *psbt.Packet, key *btcec.PrivateKey) strin
 // redemptionInput points at the contract VTXO and reveals the mutual
 // redemption leaf.
 func redemptionInput(
-	t *testing.T, c covenant.Contract, outpoint wire.OutPoint, amount int64,
+	t *testing.T, c contract.Contract, outpoint wire.OutPoint, amount int64,
 ) offchain.VtxoInput {
 	t.Helper()
 
@@ -65,7 +65,7 @@ func redemptionInput(
 // The leaf carries no tweaked emulator key, so this goes straight to arkd —
 // the emulator has nothing to execute.
 func redeem(
-	t *testing.T, p *party, c covenant.Contract, outpoint wire.OutPoint,
+	t *testing.T, p *party, c contract.Contract, outpoint wire.OutPoint,
 	outputs []*wire.TxOut, signers ...*btcec.PrivateKey,
 ) error {
 	t.Helper()
@@ -121,7 +121,7 @@ func redeem(
 // point of it, and the reason it needs both signatures. This one is nothing
 // like the covenant's, to prove the covenant is genuinely out of the way.
 func TestTheStackRedeemsTheContractMutually(t *testing.T) {
-	c := contract(t)
+	c := liveContract(t)
 	p := newParty(t)
 	p.fund(t, boardedSats)
 
@@ -148,7 +148,7 @@ func TestTheStackRefusesAOneSidedRedemption(t *testing.T) {
 		{"only the long signs", longKey},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := contract(t)
+			c := liveContract(t)
 			p := newParty(t)
 			p.fund(t, boardedSats)
 
@@ -177,7 +177,7 @@ func TestTheStackRefusesAOneSidedRedemption(t *testing.T) {
 // because that is the case with something to verify — a split the parties
 // simply agreed on has nothing to check it against.
 func TestThePartiesSignAnEarlyCloseTheyDidNotBuild(t *testing.T) {
-	c := contract(t)
+	c := liveContract(t)
 	p := newParty(t)
 	p.fund(t, boardedSats)
 
@@ -201,7 +201,7 @@ func TestThePartiesSignAnEarlyCloseTheyDidNotBuild(t *testing.T) {
 	}
 
 	for _, key := range []*btcec.PrivateKey{shortKey, longKey} {
-		if err := covenant.SignRedemption(key, r); err != nil {
+		if err := contract.SignRedemption(key, r); err != nil {
 			t.Fatalf("SignRedemption: %v", err)
 		}
 	}
@@ -218,7 +218,7 @@ func TestThePartiesSignAnEarlyCloseTheyDidNotBuild(t *testing.T) {
 // leaf on the checkpoints it hands back (`service.go:1236`), so the contract's
 // keys sign that round too.
 func submitRedemption(
-	t *testing.T, p *party, r *covenant.Redemption, signers ...*btcec.PrivateKey,
+	t *testing.T, p *party, r *contract.Redemption, signers ...*btcec.PrivateKey,
 ) error {
 	t.Helper()
 	ctx := t.Context()

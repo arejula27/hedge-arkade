@@ -6,7 +6,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/arejula27/hedge/covenant"
+	"github.com/arejula27/hedge/contract"
 	"github.com/btcsuite/btcd/btcec/v2"
 )
 
@@ -25,14 +25,14 @@ const (
 func settlementWitness(t *testing.T, price uint64) [][]byte {
 	t.Helper()
 
-	settle := covenant.OracleMessage(maturityTime, baseSequence+1, price)
-	prev := covenant.OracleMessage(maturityTime-60, baseSequence, price)
+	settle := contract.OracleMessage(maturityTime, baseSequence+1, price)
+	prev := contract.OracleMessage(maturityTime-60, baseSequence, price)
 
-	settleSig, err := covenant.SignOracleMessage(oracleKey, settle)
+	settleSig, err := contract.SignOracleMessage(oracleKey, settle)
 	if err != nil {
 		t.Fatalf("signing the settlement message: %v", err)
 	}
-	prevSig, err := covenant.SignOracleMessage(oracleKey, prev)
+	prevSig, err := contract.SignOracleMessage(oracleKey, prev)
 	if err != nil {
 		t.Fatalf("signing the previous message: %v", err)
 	}

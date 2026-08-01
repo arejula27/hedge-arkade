@@ -59,7 +59,7 @@ price while showing another as evidence.
 
 This is a **separate mechanism from the covenant**, not a continuation of it. No script and no VM
 are in this path; the 2-of-3 is plain Bitcoin and the rule is ordinary arithmetic in
-`covenant/arbitration.go`. Two things differ from the covenant and both are the price of exiting:
+`contract/arbitration.go`. Two things differ from the covenant and both are the price of exiting:
 
 - **No timing gate.** The covenant settles only at maturity or at a liquidation boundary. An exit
   can happen at any moment, so the arbitration settles at whatever the price is when it runs.
@@ -74,7 +74,7 @@ can always show what the honest split was.
 
 ## What is built
 
-`covenant/exit.go`. `NewSweep` builds the 2-of-3 destination and hands back everything needed to
+`contract/exit.go`. `NewSweep` builds the 2-of-3 destination and hands back everything needed to
 spend it again — leaf, control block and scriptPubKey — because an exit that lands somewhere the
 parties cannot reopen is the same as no exit. `PreSignExit` builds the transaction and collects both
 signatures, refusing a key that is not the one the contract was built around. `Finalize` attaches

@@ -6,7 +6,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/arejula27/hedge/covenant"
+	"github.com/arejula27/hedge/contract"
 	arklib "github.com/arkade-os/arkd/pkg/ark-lib"
 	arkscript "github.com/arkade-os/arkd/pkg/ark-lib/script"
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -27,10 +27,10 @@ func key(b byte) *btcec.PrivateKey {
 
 // terms are the standard position: a $10,000 hedge against 0.2 BTC, liquidating
 // at $50,000 and $200,000.
-func terms(t *testing.T) covenant.Terms {
+func terms(t *testing.T) contract.Terms {
 	t.Helper()
 
-	return covenant.Terms{
+	return contract.Terms{
 		NominalUnitsXSatsPerBtc:              100_000_000_000_000,
 		SatsForNominalUnitsAtHighLiquidation: 0,
 		PayoutSats:                           20_000_000,
@@ -45,17 +45,17 @@ func terms(t *testing.T) covenant.Terms {
 }
 
 func p2tr(k *btcec.PublicKey) []byte {
-	return covenant.P2TR(schnorr.SerializePubKey(k))
+	return contract.P2TR(schnorr.SerializePubKey(k))
 }
 
-// contract builds the position against the keys and the exit delay the live
+// liveContract builds the position against the keys and the exit delay the live
 // stack reports, not against constants we chose.
-func contract(t *testing.T) covenant.Contract {
+func liveContract(t *testing.T) contract.Contract {
 	t.Helper()
 
-	return covenant.Contract{
+	return contract.Contract{
 		Terms: terms(t),
-		Keys: covenant.Keys{
+		Keys: contract.Keys{
 			Short:          shortKey.PubKey(),
 			Long:           longKey.PubKey(),
 			ArkdSigner:     stack.arkdSigner,
@@ -70,7 +70,7 @@ func contract(t *testing.T) covenant.Contract {
 // it with the operator's real one, on the real signer key. A drift in either —
 // a new arkd version, a different regtest configuration — surfaces here.
 func TestTheRealOperatorWouldAcceptTheContract(t *testing.T) {
-	c := contract(t)
+	c := liveContract(t)
 
 	if err := c.Validate(stack.exitDelay, stack.allowsBlockTimelocks()); err != nil {
 		t.Fatalf("the live operator's rules reject this contract: %v", err)
@@ -91,7 +91,7 @@ func TestTheRealOperatorRejectsAShortExit(t *testing.T) {
 		t.Skip("the operator's exit delay is already at the minimum")
 	}
 
-	c := contract(t)
+	c := liveContract(t)
 	c.ExitDelay = arklib.RelativeLocktime{Type: stack.exitDelay.Type, Value: 1}
 
 	if err := c.Validate(stack.exitDelay, stack.allowsBlockTimelocks()); err == nil {
@@ -103,7 +103,7 @@ func TestTheRealOperatorRejectsAShortExit(t *testing.T) {
 // five closure shapes. This runs it at the version the stack is actually
 // running rather than the version our go.mod happens to pin.
 func TestTheRealArkdDecodesEveryLeaf(t *testing.T) {
-	c := contract(t)
+	c := liveContract(t)
 
 	vtxo, err := c.VtxoScript()
 	if err != nil {
@@ -128,10 +128,10 @@ func TestBothPayoutsClearTheOperatorsDust(t *testing.T) {
 		t.Skip("the operator reports no dust threshold")
 	}
 
-	if covenant.Dust < stack.dust {
+	if contract.Dust < stack.dust {
 		t.Errorf("the covenant's dust floor is %d, below the operator's %d — "+
 			"a liquidation would pay an output arkd rejects",
-			covenant.Dust, stack.dust)
+			contract.Dust, stack.dust)
 	}
 }
 
@@ -139,15 +139,15 @@ func TestBothPayoutsClearTheOperatorsDust(t *testing.T) {
 // The unit test proves this against our own taproot implementation; this proves
 // it against the leaf bytes arkd would be given.
 func TestEveryLeafProvesItselfAgainstTheFundedAddress(t *testing.T) {
-	c := contract(t)
+	c := liveContract(t)
 
 	tapKey, err := c.TaprootKey()
 	if err != nil {
 		t.Fatalf("TaprootKey: %v", err)
 	}
 
-	for _, leaf := range []covenant.Leaf{
-		covenant.LeafSettlement, covenant.LeafMutualRedemption, covenant.LeafExit,
+	for _, leaf := range []contract.Leaf{
+		contract.LeafSettlement, contract.LeafMutualRedemption, contract.LeafExit,
 	} {
 		t.Run(leaf.String(), func(t *testing.T) {
 			proof, err := c.Tapscript(leaf)

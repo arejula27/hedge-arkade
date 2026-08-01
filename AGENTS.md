@@ -25,7 +25,7 @@ Start with `doc/oracle.md` — settlement without a clock is the part that expla
   `../emulator/pkg/arkade` requires — and Node 22. Nothing is installed globally on this machine,
   so every `go`/`node` invocation goes through `nix develop --command`
 - **Service** (API, web, users, matching, oracle, arkd client): **Go**
-- **Contract builder**: Go, in `covenant/`. Scripts are assembled with
+- **Contract builder**: Go, in `contract/`. Scripts are assembled with
   `txscript.NewScriptBuilder` and the opcodes `pkg/arkade` exports. `arkadec`/`.ark` is spec-only,
   off the build path
 - **Client verifier**: TypeScript in the browser. Recognises a contract against known templates or
@@ -53,7 +53,7 @@ it can be imported standalone. `NewEngine`, `Engine.Execute()`, `SetStack`, `Get
 `ArkPrevOutFetcher` interface (3 methods), and the **real covenant VM runs in `go test`** — no
 Docker, no arkd, no nigiri.
 
-This is wired up in `covenant/vm.go` and green. `Run(script, witness, spend)` builds the spending
+This is wired up in `contract/vm.go` and green. `Run(script, witness, spend)` builds the spending
 transaction, sets the witness stack and executes. `pkg/arkade` comes from the published module —
 no local `replace`, so the repo builds anywhere — and is the same interpreter the emulator service
 runs before co-signing (`internal/application/tx.go:67`).
@@ -102,7 +102,7 @@ all need real execution.
 - **The clamp is load-bearing too.** Every price past a boundary settles identically, so it does
   not matter which out-of-bounds message a spender picks. Removing either liquidation boundary
   breaks the no-clock property, not just the economics
-- **The settlement math runs in the covenant, never on our server.** `covenant/` emits that script
+- **The settlement math runs in the covenant, never on our server.** `contract/` emits that script
   and runs it; it holds no formula of its own. Any design that computes the split service-side is
   wrong
 - **All arithmetic runs on the VM**, including `hedgeValueCents * 1e8`. Folding it into a

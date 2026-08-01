@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/arejula27/hedge/covenant"
+	"github.com/arejula27/hedge/contract"
 	arklib "github.com/arkade-os/arkd/pkg/ark-lib"
 	arkscript "github.com/arkade-os/arkd/pkg/ark-lib/script"
 	"github.com/arkade-os/arkd/pkg/ark-lib/tree"
@@ -40,7 +40,7 @@ import (
 type renewalSession struct {
 	t        *testing.T
 	party    *party
-	contract covenant.Contract
+	contract contract.Contract
 	// coins are forfeited in the order they were registered, which is the order
 	// arkd hands back connectors.
 	coins    []forfeitable
@@ -71,11 +71,11 @@ type forfeitable struct {
 // covenant. Leaf 2 is short + long + arkd, which is a forfeit closure in the
 // ordinary sense: the two owners hand the money over and the operator co-signs.
 func contractForfeit(
-	t *testing.T, c covenant.Contract, outpoint wire.OutPoint, short, long *btcec.PrivateKey,
+	t *testing.T, c contract.Contract, outpoint wire.OutPoint, short, long *btcec.PrivateKey,
 ) forfeitable {
 	t.Helper()
 
-	merkle, err := c.Tapscript(covenant.LeafMutualRedemption)
+	merkle, err := c.Tapscript(contract.LeafMutualRedemption)
 	if err != nil {
 		t.Fatalf("Tapscript: %v", err)
 	}

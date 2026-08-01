@@ -4,7 +4,7 @@
 // No contract logic is reimplemented here. The settlement formula exists in
 // exactly one place — the script this package emits — and the tests assert on
 // what the VM does with it, not on what a parallel Go model would compute.
-package covenant
+package contract
 
 import (
 	"github.com/arkade-os/emulator/pkg/arkade"

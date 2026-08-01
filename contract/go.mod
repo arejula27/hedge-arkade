@@ -1,4 +1,4 @@
-module github.com/arejula27/hedge/covenant
+module github.com/arejula27/hedge/contract
 
 go 1.26.5
 

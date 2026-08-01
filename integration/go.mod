@@ -3,7 +3,7 @@ module github.com/arejula27/hedge/integration
 go 1.26.5
 
 require (
-	github.com/arejula27/hedge/covenant v0.0.0
+	github.com/arejula27/hedge/contract v0.0.0
 	github.com/arkade-os/arkd/pkg/ark-lib v0.8.1-0.20260318170839-137daaec3a70
 	github.com/arkade-os/emulator/pkg/arkade v0.0.0-20260728084232-b2c7d853d267
 	github.com/arkade-os/emulator/pkg/client v0.0.0-20260728084232-b2c7d853d267
@@ -103,6 +103,6 @@ require (
 	modernc.org/token v1.1.0 // indirect
 )
 
-replace github.com/arejula27/hedge/covenant => ../covenant
+replace github.com/arejula27/hedge/contract => ../contract
 
 replace github.com/btcsuite/btcd/btcec/v2 => github.com/btcsuite/btcd/btcec/v2 v2.3.3

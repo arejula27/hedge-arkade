@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/arejula27/hedge/covenant"
+	"github.com/arejula27/hedge/contract"
 	"github.com/arkade-os/arkd/pkg/ark-lib/offchain"
 	"github.com/arkade-os/emulator/pkg/arkade"
 	"github.com/btcsuite/btcd/btcutil/psbt"
@@ -61,7 +61,7 @@ func signEveryone(
 // stakes says what each side puts in; they have to sum to PayoutSats, which is
 // what the covenant pins the input to.
 func fundContractBilaterally(
-	t *testing.T, short, long *party, c covenant.Contract, shortStake, longStake int64,
+	t *testing.T, short, long *party, c contract.Contract, shortStake, longStake int64,
 ) wire.OutPoint {
 	t.Helper()
 	ctx := t.Context()
@@ -156,7 +156,7 @@ func waitForVtxo(t *testing.T, p *party, txid string) {
 // round trip: in from both sides, out to both sides, with the covenant deciding
 // the split.
 func TestTwoPartiesFundAndSettleTheContract(t *testing.T) {
-	c := contract(t)
+	c := liveContract(t)
 
 	short, long := newParty(t), newParty(t)
 	short.fund(t, boardedSats)
@@ -175,7 +175,7 @@ func TestTwoPartiesFundAndSettleTheContract(t *testing.T) {
 // wrong total is one that can never settle. Catching it at funding is the
 // difference between a refused transaction and money nobody can move.
 func TestTheStackRefusesAnOverfundedContract(t *testing.T) {
-	c := contract(t)
+	c := liveContract(t)
 
 	short, long := newParty(t), newParty(t)
 	short.fund(t, boardedSats)

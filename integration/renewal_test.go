@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/arejula27/hedge/covenant"
+	"github.com/arejula27/hedge/contract"
 	arklib "github.com/arkade-os/arkd/pkg/ark-lib"
 	"github.com/arkade-os/arkd/pkg/ark-lib/intent"
 	"github.com/arkade-os/arkd/pkg/ark-lib/tree"
@@ -51,7 +51,7 @@ type intentCoin struct {
 
 // contractCoin proves the contract VTXO through one of its leaves.
 func contractCoin(
-	t *testing.T, c covenant.Contract, outpoint wire.OutPoint, leaf covenant.Leaf,
+	t *testing.T, c contract.Contract, outpoint wire.OutPoint, leaf contract.Leaf,
 ) intentCoin {
 	t.Helper()
 
@@ -77,7 +77,7 @@ func contractCoin(
 	// The engine checks the sequence against the script; how old the VTXO
 	// actually is belongs to consensus, which never sees this transaction.
 	sequence := uint32(wire.MaxTxInSequenceNum)
-	if leaf == covenant.LeafExit {
+	if leaf == contract.LeafExit {
 		sequence, err = arklib.BIP68Sequence(c.ExitDelay)
 		if err != nil {
 			t.Fatalf("BIP68Sequence: %v", err)
@@ -205,8 +205,8 @@ func intentMessage(t *testing.T, messageType intent.IntentMessageType) string {
 // VTXO that leaf 1 can never settle. The fee comes from the party's own coin
 // instead, and its change comes back to the party.
 func renewalIntent(
-	t *testing.T, p *party, c covenant.Contract, outpoint wire.OutPoint,
-	leaf covenant.Leaf, fee int64, messageType intent.IntentMessageType,
+	t *testing.T, p *party, c contract.Contract, outpoint wire.OutPoint,
+	leaf contract.Leaf, fee int64, messageType intent.IntentMessageType,
 ) (*intent.Proof, string) {
 	t.Helper()
 
@@ -262,7 +262,7 @@ func signIntent(t *testing.T, proof *intent.Proof, signers ...*btcec.PrivateKey)
 // the estimate is a fixed point, not a lookup: quote, rebuild, quote again,
 // until the quote is covered.
 func renewalFee(
-	t *testing.T, p *party, c covenant.Contract, outpoint wire.OutPoint, leaf covenant.Leaf,
+	t *testing.T, p *party, c contract.Contract, outpoint wire.OutPoint, leaf contract.Leaf,
 	short, long *btcec.PrivateKey,
 ) int64 {
 	t.Helper()
@@ -298,8 +298,8 @@ func renewalFee(
 // The party's own key signs too: its coin is what pays arkd's fee, and the
 // contract's keys are not in that coin's leaf.
 func registerRenewal(
-	t *testing.T, p *party, c covenant.Contract, outpoint wire.OutPoint,
-	leaf covenant.Leaf, signers ...*btcec.PrivateKey,
+	t *testing.T, p *party, c contract.Contract, outpoint wire.OutPoint,
+	leaf contract.Leaf, signers ...*btcec.PrivateKey,
 ) (string, error) {
 	t.Helper()
 
@@ -322,16 +322,16 @@ func registerRenewal(
 // pre-signed exit package commits to the outpoint, so it dies here and has to
 // be signed again.
 func renew(
-	t *testing.T, p *party, c covenant.Contract, outpoint wire.OutPoint,
+	t *testing.T, p *party, c contract.Contract, outpoint wire.OutPoint,
 	short, long *btcec.PrivateKey,
 ) wire.OutPoint {
 	t.Helper()
 	ctx := t.Context()
 
-	fee := renewalFee(t, p, c, outpoint, covenant.LeafExit, short, long)
+	fee := renewalFee(t, p, c, outpoint, contract.LeafExit, short, long)
 	payer := feeCoin(t, p)
 	proof, message := renewalIntent(
-		t, p, c, outpoint, covenant.LeafExit, fee, intent.IntentMessageTypeRegister,
+		t, p, c, outpoint, contract.LeafExit, fee, intent.IntentMessageTypeRegister,
 	)
 
 	intentID, err := p.arkd.RegisterIntent(
@@ -371,7 +371,7 @@ func renew(
 // consistent, so a lookup that returned it would mean the swap has not landed
 // yet rather than that it failed.
 func contractVtxo(
-	t *testing.T, p *party, c covenant.Contract, previous wire.OutPoint,
+	t *testing.T, p *party, c contract.Contract, previous wire.OutPoint,
 ) wire.OutPoint {
 	t.Helper()
 
@@ -418,8 +418,8 @@ func contractVtxo(
 // batch is shared with every other test running against this stack, so an
 // intent registered to prove a point has to be taken back.
 func forgetRenewal(
-	t *testing.T, p *party, c covenant.Contract, outpoint wire.OutPoint,
-	leaf covenant.Leaf, signers ...*btcec.PrivateKey,
+	t *testing.T, p *party, c contract.Contract, outpoint wire.OutPoint,
+	leaf contract.Leaf, signers ...*btcec.PrivateKey,
 ) {
 	t.Helper()
 
@@ -445,33 +445,33 @@ func forgetRenewal(
 // key that is in a collaborative leaf, which means the operator, which means
 // the contract cannot be renewed without it.
 func TestArkdAcceptsAnIntentSignedOnTheExitLeaf(t *testing.T) {
-	c := contract(t)
+	c := liveContract(t)
 	p := newParty(t)
 	p.fund(t, boardedSats)
 
 	outpoint := fundContract(t, p, c)
 
-	intentID, err := registerRenewal(t, p, c, outpoint, covenant.LeafExit, shortKey, longKey)
+	intentID, err := registerRenewal(t, p, c, outpoint, contract.LeafExit, shortKey, longKey)
 	if err != nil {
 		t.Fatalf("arkd refused an intent proved on the exit leaf: %v", err)
 	}
 	t.Logf("intent accepted: %s", intentID)
 
-	forgetRenewal(t, p, c, outpoint, covenant.LeafExit, shortKey, longKey)
+	forgetRenewal(t, p, c, outpoint, contract.LeafExit, shortKey, longKey)
 }
 
 // Whether the mutual redemption leaf works as well decides whether the proof
 // has to carry a BIP68 sequence at all. It is not the leaf the docs describe,
 // and it carries the operator key, so a failure here costs nothing.
 func TestArkdAcceptsAnIntentSignedOnTheMutualLeaf(t *testing.T) {
-	c := contract(t)
+	c := liveContract(t)
 	p := newParty(t)
 	p.fund(t, boardedSats)
 
 	outpoint := fundContract(t, p, c)
 
 	intentID, err := registerRenewal(
-		t, p, c, outpoint, covenant.LeafMutualRedemption, shortKey, longKey,
+		t, p, c, outpoint, contract.LeafMutualRedemption, shortKey, longKey,
 	)
 	if err != nil {
 		t.Logf("arkd refused an intent proved on the mutual leaf: %v", err)
@@ -479,7 +479,7 @@ func TestArkdAcceptsAnIntentSignedOnTheMutualLeaf(t *testing.T) {
 	}
 	t.Logf("intent accepted: %s", intentID)
 
-	forgetRenewal(t, p, c, outpoint, covenant.LeafMutualRedemption, shortKey, longKey)
+	forgetRenewal(t, p, c, outpoint, contract.LeafMutualRedemption, shortKey, longKey)
 }
 
 // Renewing is not free, and the obvious way to pay — take it off the contract —
@@ -491,13 +491,13 @@ func TestArkdAcceptsAnIntentSignedOnTheMutualLeaf(t *testing.T) {
 // arkd computes from a CEL program, and an operator that charged nothing would
 // hide the problem rather than solve it.
 func TestRenewalCannotBePaidOutOfTheContract(t *testing.T) {
-	c := contract(t)
+	c := liveContract(t)
 	p := newParty(t)
 	p.fund(t, boardedSats)
 
 	outpoint := fundContract(t, p, c)
 
-	fee := renewalFee(t, p, c, outpoint, covenant.LeafExit, shortKey, longKey)
+	fee := renewalFee(t, p, c, outpoint, contract.LeafExit, shortKey, longKey)
 	if fee <= 0 {
 		t.Skip("this operator charges nothing for an intent")
 	}
@@ -506,7 +506,7 @@ func TestRenewalCannotBePaidOutOfTheContract(t *testing.T) {
 	// The renewal that pays itself: one input, one output, short by the fee.
 	shrunk := buildIntent(t,
 		intentMessage(t, intent.IntentMessageTypeRegister),
-		[]intentCoin{contractCoin(t, c, outpoint, covenant.LeafExit)},
+		[]intentCoin{contractCoin(t, c, outpoint, contract.LeafExit)},
 		[]*wire.TxOut{{Value: c.Terms.PayoutSats - fee, PkScript: mustPkScript(t, c)}},
 	)
 
@@ -520,10 +520,10 @@ func TestRenewalCannotBePaidOutOfTheContract(t *testing.T) {
 	t.Logf("arkd accepts it (%s) — and it would leave a contract holding %d "+
 		"that leaf 1 requires to hold %d", intentID, c.Terms.PayoutSats-fee, c.Terms.PayoutSats)
 
-	forgetRenewal(t, p, c, outpoint, covenant.LeafExit, shortKey, longKey)
+	forgetRenewal(t, p, c, outpoint, contract.LeafExit, shortKey, longKey)
 }
 
-func mustPkScript(t *testing.T, c covenant.Contract) []byte {
+func mustPkScript(t *testing.T, c contract.Contract) []byte {
 	t.Helper()
 
 	pkScript, err := c.PkScript()
@@ -544,13 +544,13 @@ func TestArkdRefusesARenewalOnlyOnePartySigned(t *testing.T) {
 		{"only the long signs", longKey},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := contract(t)
+			c := liveContract(t)
 			p := newParty(t)
 			p.fund(t, boardedSats)
 
 			outpoint := fundContract(t, p, c)
 
-			_, err := registerRenewal(t, p, c, outpoint, covenant.LeafExit, tc.signer)
+			_, err := registerRenewal(t, p, c, outpoint, contract.LeafExit, tc.signer)
 			if err == nil {
 				t.Fatal("arkd accepted a renewal intent one party signed alone")
 			}
@@ -585,7 +585,7 @@ var renewalRounds = []int{1, 2}
 // new. A renewal that returned the same outpoint would pass every other
 // assertion here while having done nothing.
 func renewTimes(
-	t *testing.T, p *party, c covenant.Contract, outpoint wire.OutPoint,
+	t *testing.T, p *party, c contract.Contract, outpoint wire.OutPoint,
 	short, long *btcec.PrivateKey, n int,
 ) wire.OutPoint {
 	t.Helper()
@@ -609,7 +609,7 @@ func renewTimes(
 func TestARenewedContractStillSettles(t *testing.T) {
 	for _, rounds := range renewalRounds {
 		t.Run(fmt.Sprintf("after %d renewals", rounds), func(t *testing.T) {
-			c := contract(t)
+			c := liveContract(t)
 			p := newParty(t)
 			p.fund(t, boardedSats)
 
@@ -631,7 +631,7 @@ func TestARenewedContractStillSettles(t *testing.T) {
 func TestARenewedContractStillRedeemsMutually(t *testing.T) {
 	for _, rounds := range renewalRounds {
 		t.Run(fmt.Sprintf("after %d renewals", rounds), func(t *testing.T) {
-			c := contract(t)
+			c := liveContract(t)
 			p := newParty(t)
 			p.fund(t, boardedSats)
 

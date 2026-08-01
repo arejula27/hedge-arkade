@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/arejula27/hedge/covenant"
+	"github.com/arejula27/hedge/contract"
 	"github.com/arkade-os/go-sdk/explorer"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/wire"
@@ -27,8 +27,8 @@ const arbitrationFeeSats = 2_000
 // output waiting there. This is the earlier exit test, reused as a starting
 // position rather than as the thing under test.
 func exitTo(
-	t *testing.T, e explorer.Explorer, c covenant.Contract,
-	parties exitParties, sweep *covenant.Sweep,
+	t *testing.T, e explorer.Explorer, c contract.Contract,
+	parties exitParties, sweep *contract.Sweep,
 ) (wire.OutPoint, int64) {
 	t.Helper()
 
@@ -92,8 +92,8 @@ func exitTo(
 func signedPrice(t *testing.T, price uint64) (msg, sig []byte) {
 	t.Helper()
 
-	msg = covenant.OracleMessage(maturityTime, baseSequence+1, price)
-	sig, err := covenant.SignOracleMessage(oracleKey, msg)
+	msg = contract.OracleMessage(maturityTime, baseSequence+1, price)
+	sig, err := contract.SignOracleMessage(oracleKey, msg)
 	if err != nil {
 		t.Fatalf("signing the oracle message: %v", err)
 	}
@@ -186,8 +186,8 @@ func TestTheServiceCannotArbitrateAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SignArbitration: %v", err)
 	}
-	if _, err := covenant.FinalizeArbitration(proposal, sweep, map[string][]byte{
-		covenant.XOnlyHex(parties.service.PubKey()): signature,
+	if _, err := contract.FinalizeArbitration(proposal, sweep, map[string][]byte{
+		contract.XOnlyHex(parties.service.PubKey()): signature,
 	}); err == nil {
 		t.Fatal("the service built a witness on its own signature")
 	}
@@ -200,7 +200,7 @@ func TestTheServiceCannotArbitrateAlone(t *testing.T) {
 	stolen.TxOut[0].Value = available - arbitrationFeeSats - int64(stack.dust)
 	stolen.TxOut[1].Value = int64(stack.dust)
 
-	theft := &covenant.Arbitration{
+	theft := &contract.Arbitration{
 		Tx: stolen, ShortSats: stolen.TxOut[0].Value, LongSats: stolen.TxOut[1].Value,
 		Message: msg, Signature: sig,
 	}
@@ -213,8 +213,8 @@ func TestTheServiceCannotArbitrateAlone(t *testing.T) {
 // than returning an error — a signing problem here is a broken test, not a
 // result worth asserting on.
 func signArbitration(
-	t *testing.T, c covenant.Contract, a *covenant.Arbitration,
-	sweep *covenant.Sweep, available int64, signers ...*btcec.PrivateKey,
+	t *testing.T, c contract.Contract, a *contract.Arbitration,
+	sweep *contract.Sweep, available int64, signers ...*btcec.PrivateKey,
 ) *wire.MsgTx {
 	t.Helper()
 
@@ -224,10 +224,10 @@ func signArbitration(
 		if err != nil {
 			t.Fatalf("SignArbitration: %v", err)
 		}
-		sigs[covenant.XOnlyHex(key.PubKey())] = sig
+		sigs[contract.XOnlyHex(key.PubKey())] = sig
 	}
 
-	final, err := covenant.FinalizeArbitration(a, sweep, sigs)
+	final, err := contract.FinalizeArbitration(a, sweep, sigs)
 	if err != nil {
 		t.Fatalf("FinalizeArbitration: %v", err)
 	}

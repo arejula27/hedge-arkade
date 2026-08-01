@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/arejula27/hedge/covenant"
+	"github.com/arejula27/hedge/contract"
 	arklib "github.com/arkade-os/arkd/pkg/ark-lib"
 	"github.com/arkade-os/go-sdk/explorer"
 	mempoolexplorer "github.com/arkade-os/go-sdk/explorer/mempool"
@@ -39,12 +39,12 @@ type exitParties struct {
 	short, long, service *btcec.PrivateKey
 }
 
-func exitContract(t *testing.T) (covenant.Contract, exitParties, *covenant.Sweep) {
+func exitContract(t *testing.T) (contract.Contract, exitParties, *contract.Sweep) {
 	t.Helper()
 
 	parties := exitParties{freshKey(t), freshKey(t), freshKey(t)}
 
-	c := contract(t)
+	c := liveContract(t)
 	c.Keys.Short = parties.short.PubKey()
 	c.Keys.Long = parties.long.PubKey()
 
@@ -54,7 +54,7 @@ func exitContract(t *testing.T) (covenant.Contract, exitParties, *covenant.Sweep
 	c.Terms.ShortLockScript = p2tr(parties.short.PubKey())
 	c.Terms.LongLockScript = p2tr(parties.long.PubKey())
 
-	sweep, err := covenant.NewSweep(
+	sweep, err := contract.NewSweep(
 		parties.short.PubKey(), parties.long.PubKey(), parties.service.PubKey(),
 	)
 	if err != nil {
@@ -298,7 +298,7 @@ func TestTheChainRefusesARewrittenExit(t *testing.T) {
 	t.Logf("contract address %s", address)
 
 	// Where the short would rather the money went: a 2-of-3 the long is not in.
-	thief, err := covenant.NewSweep(parties.short.PubKey(), parties.short.PubKey(), parties.short.PubKey())
+	thief, err := contract.NewSweep(parties.short.PubKey(), parties.short.PubKey(), parties.short.PubKey())
 	if err != nil {
 		t.Fatalf("NewSweep: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestTheChainRefusesARewrittenExit(t *testing.T) {
 }
 
 // sweepKey recovers the sweep's output key so it can be rendered as an address.
-func sweepKey(t *testing.T, s *covenant.Sweep) *btcec.PublicKey {
+func sweepKey(t *testing.T, s *contract.Sweep) *btcec.PublicKey {
 	t.Helper()
 
 	// P2TR: OP_1 <32-byte key>.

@@ -258,7 +258,7 @@ Two consequences. Editing one opcode of the covenant changes the key, so the lea
 for the script it was built for. And arkd sees an ordinary multisig, so the covenant needs no
 special support from it.
 
-Building this is `covenant/vtxo.go`; `Contract.Validate` runs arkd's own `TapscriptsVtxoScript.Validate`
+Building this is `contract/vtxo.go`; `Contract.Validate` runs arkd's own `TapscriptsVtxoScript.Validate`
 against the tree before anything is funded.
 
 ## Leaf 1 — Settlement at maturity or liquidation

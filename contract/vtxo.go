@@ -1,4 +1,4 @@
-package covenant
+package contract
 
 import (
 	"fmt"

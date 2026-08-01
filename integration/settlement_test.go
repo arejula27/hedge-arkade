@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/arejula27/hedge/covenant"
+	"github.com/arejula27/hedge/contract"
 	"github.com/arkade-os/arkd/pkg/ark-lib/extension"
 	"github.com/arkade-os/arkd/pkg/ark-lib/offchain"
 	"github.com/arkade-os/arkd/pkg/ark-lib/txutils"
@@ -45,7 +45,7 @@ const boardedSats = 50_000_000
 // OP_RETURN and the P2A anchor — four outputs, not the two a covenant that
 // counted them would demand.
 func TestTheStackSettlesTheContract(t *testing.T) {
-	c := contract(t)
+	c := liveContract(t)
 	p := newParty(t)
 	p.fund(t, boardedSats)
 
@@ -60,7 +60,7 @@ func TestTheStackSettlesTheContract(t *testing.T) {
 // A sat moved to the short. The transaction still balances, so nothing arkd
 // checks is violated — only the covenant is.
 func TestTheStackRefusesAStolenSat(t *testing.T) {
-	c := contract(t)
+	c := liveContract(t)
 	p := newParty(t)
 	p.fund(t, boardedSats)
 
@@ -77,7 +77,7 @@ func TestTheStackRefusesAStolenSat(t *testing.T) {
 // The amounts are right and the recipient is not. Value conservation cannot
 // catch this; only the lock script check can.
 func TestTheStackRefusesARedirectedPayout(t *testing.T) {
-	c := contract(t)
+	c := liveContract(t)
 	p := newParty(t)
 	p.fund(t, boardedSats)
 
@@ -101,7 +101,7 @@ func TestTheStackRefusesARedirectedPayout(t *testing.T) {
 // sends the rest back as change. It returns the contract VTXO's outpoint.
 //
 // This transaction has no covenant on its input, so it goes straight to arkd.
-func fundContract(t *testing.T, p *party, c covenant.Contract) wire.OutPoint {
+func fundContract(t *testing.T, p *party, c contract.Contract) wire.OutPoint {
 	t.Helper()
 
 	contractPkScript, err := c.PkScript()
@@ -142,7 +142,7 @@ func fundContract(t *testing.T, p *party, c covenant.Contract) wire.OutPoint {
 }
 
 func settlementSpending(
-	t *testing.T, c covenant.Contract, outpoint wire.OutPoint, short, long int64,
+	t *testing.T, c contract.Contract, outpoint wire.OutPoint, short, long int64,
 ) (*psbt.Packet, []*psbt.Packet) {
 	t.Helper()
 
@@ -156,7 +156,7 @@ func settlementSpending(
 // the settlement leaf, with the covenant and both oracle messages in the
 // emulator packet.
 func settlementPaying(
-	t *testing.T, c covenant.Contract, outpoint wire.OutPoint, outputs []*wire.TxOut,
+	t *testing.T, c contract.Contract, outpoint wire.OutPoint, outputs []*wire.TxOut,
 ) (*psbt.Packet, []*psbt.Packet) {
 	t.Helper()
 
@@ -185,11 +185,11 @@ func settlementPaying(
 
 // contractInput points at the contract VTXO and reveals the settlement leaf.
 func contractInput(
-	t *testing.T, c covenant.Contract, outpoint wire.OutPoint, amount int64,
+	t *testing.T, c contract.Contract, outpoint wire.OutPoint, amount int64,
 ) offchain.VtxoInput {
 	t.Helper()
 
-	proof, err := c.Tapscript(covenant.LeafSettlement)
+	proof, err := c.Tapscript(contract.LeafSettlement)
 	if err != nil {
 		t.Fatalf("Tapscript: %v", err)
 	}

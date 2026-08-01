@@ -17,38 +17,38 @@ check-all: check regtest-up test-integration
 
 # Covenant tests against the real Arkade VM.
 test:
-    @{{go}} 'cd covenant && go test ./...'
+    @{{go}} 'cd contract && go test ./...'
 
 # The same, with every case named.
 test-verbose:
-    @{{go}} 'cd covenant && go test ./... -v'
+    @{{go}} 'cd contract && go test ./... -v'
 
 # Run one test or subtest by regex, e.g. `just test-one Sequence`.
 test-one pattern:
-    @{{go}} 'cd covenant && go test ./... -run "{{pattern}}" -v'
+    @{{go}} 'cd contract && go test ./... -run "{{pattern}}" -v'
 
 # Tests with the race detector and no result cache.
 test-race:
-    @{{go}} 'cd covenant && go test ./... -race -count=1'
+    @{{go}} 'cd contract && go test ./... -race -count=1'
 
 # Coverage, per function.
 test-cover:
-    @{{go}} 'cd covenant && go test ./... -coverprofile=coverage.out && go tool cover -func=coverage.out | tail -20'
+    @{{go}} 'cd contract && go test ./... -coverprofile=coverage.out && go tool cover -func=coverage.out | tail -20'
 
 # Rewrite files that are not gofmt'd.
 fmt:
-    @{{go}} 'gofmt -w covenant integration'
+    @{{go}} 'gofmt -w contract integration'
 
 # Fail if anything is not gofmt'd.
 fmt-check:
-    @{{go}} 'test -z "$(gofmt -l covenant integration)" || { echo "not gofmt'"'"'d:"; gofmt -l covenant integration; exit 1; }'
+    @{{go}} 'test -z "$(gofmt -l contract integration)" || { echo "not gofmt'"'"'d:"; gofmt -l contract integration; exit 1; }'
 
 vet:
-    @{{go}} 'cd covenant && go vet ./...'
+    @{{go}} 'cd contract && go vet ./...'
     @{{go}} 'cd integration && go vet -tags integration ./...'
 
 tidy:
-    @{{go}} 'cd covenant && go mod tidy'
+    @{{go}} 'cd contract && go mod tidy'
     @{{go}} 'cd integration && go mod tidy'
 
 # --- Integration -------------------------------------------------------------
@@ -77,7 +77,7 @@ test-integration:
 
 # Print the settlement script hex the TypeScript verifier must match.
 script-hex:
-    @{{go}} 'cd covenant && go test ./... -run TestSettlementScriptIsStable -v'
+    @{{go}} 'cd contract && go test ./... -run TestSettlementScriptIsStable -v'
 
 # Drop into the dev shell.
 shell:

@@ -30,7 +30,7 @@ Go 1.26.5 — the version `pkg/arkade` requires — plus Node 22 and `just`.
 
 | Path | What |
 |---|---|
-| `covenant/` | The contract. Builds the Arkade Script and runs it against the VM |
+| `contract/` | The contract. Builds the Arkade Script and runs it against the VM |
 | `integration/` | The same contract against a live arkd and emulator |
 | `doc/` | Design notes |
 
