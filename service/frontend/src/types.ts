@@ -97,6 +97,21 @@ export type Redemption = {
   long_signed: boolean
 }
 
+// The split after a unilateral exit, when the covenant is gone and the money is
+// in a 2-of-3 on plain Bitcoin.
+export type Arbitration = {
+  id: string
+  short_sats: number
+  long_sats: number
+  price: number
+  message: string
+  signature: string
+  available: number
+  signatures: number
+  signed: boolean
+  txid?: string
+}
+
 export type Contract = {
   id: string
   state: State
@@ -118,6 +133,7 @@ export type Contract = {
 
   projection?: Projection
   redemption?: Redemption
+  arbitration?: Arbitration
   events?: ContractEvent[]
 }
 

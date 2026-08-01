@@ -36,9 +36,19 @@ type ExitPackage struct {
 	Exit
 	ShortSig []byte
 	LongSig  []byte
+
+	// Swept is where the exit landed, once it has been broadcast. It is written
+	// as soon as the transaction is on the chain, because everything after that
+	// point — arbitrating, signing, paying — has to be able to start again from
+	// the row alone.
+	Swept     *Outpoint
+	SweptSats int64
 }
 
 // Complete says whether both parties have signed.
 func (p ExitPackage) Complete() bool {
 	return len(p.ShortSig) > 0 && len(p.LongSig) > 0
 }
+
+// OnChain says whether the exit has been broadcast and found.
+func (p ExitPackage) OnChain() bool { return p.Swept != nil }

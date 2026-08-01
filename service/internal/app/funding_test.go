@@ -110,7 +110,7 @@ func TestFundingPreSignsTheExit(t *testing.T) {
 	f := apptest.New(t)
 	c := f.Funded(t)
 
-	pkg, err := f.App.Exit(t.Context(), c.ID)
+	pkg, err := f.App.ExitPackage(t.Context(), c.ID)
 	if err != nil {
 		t.Fatalf("Exit: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestFundingRefusesASignatureFromTheWrongKey(t *testing.T) {
 	if c.State == domain.Active {
 		t.Fatal("the contract went live with an exit neither party could use")
 	}
-	if _, err := f.App.Exit(t.Context(), c.ID); !errors.Is(err, domain.ErrNotFound) {
+	if _, err := f.App.ExitPackage(t.Context(), c.ID); !errors.Is(err, domain.ErrNotFound) {
 		t.Error("a package signed by the wrong key was stored")
 	}
 }

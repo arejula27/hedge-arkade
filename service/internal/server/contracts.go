@@ -87,9 +87,10 @@ type contractResponse struct {
 	Funding   *outpointResponse `json:"funding,omitempty"`
 	ExitReady bool              `json:"exit_ready"`
 
-	Projection *projectionResponse `json:"projection,omitempty"`
-	Redemption *redemptionResponse `json:"redemption,omitempty"`
-	Events     []eventResponse     `json:"events,omitempty"`
+	Projection  *projectionResponse  `json:"projection,omitempty"`
+	Redemption  *redemptionResponse  `json:"redemption,omitempty"`
+	Arbitration *arbitrationResponse `json:"arbitration,omitempty"`
+	Events      []eventResponse      `json:"events,omitempty"`
 }
 
 // view renders a contract. names resolves a user id to a person; there are two
@@ -272,7 +273,7 @@ func (s *Server) showContract(c echo.Context) error {
 		}
 	}
 
-	if _, err := s.app.Exit(ctx, id); err == nil {
+	if _, err := s.app.ExitPackage(ctx, id); err == nil {
 		out.ExitReady = true
 	} else if !errors.Is(err, domain.ErrNotFound) {
 		return err
@@ -281,6 +282,13 @@ func (s *Server) showContract(c echo.Context) error {
 	if proposal, err := s.app.Redemption(ctx, id); err == nil {
 		view := asRedemption(proposal)
 		out.Redemption = &view
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return err
+	}
+
+	if proposal, err := s.app.Arbitration(ctx, id); err == nil {
+		view := asArbitration(proposal)
+		out.Arbitration = &view
 	} else if !errors.Is(err, domain.ErrNotFound) {
 		return err
 	}

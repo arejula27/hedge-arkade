@@ -74,6 +74,23 @@ type Signer interface {
 
 	// SignExit signs one side of the pre-signed unilateral exit.
 	SignExit(ctx context.Context, user uuid.UUID, c *domain.Contract, exit *domain.Exit) ([]byte, error)
+
+	// SignSweep signs an arbitration spending the 2-of-3 the exit landed in.
+	SignSweep(ctx context.Context, user uuid.UUID, c *domain.Contract, a *domain.Arbitration) ([]byte, error)
+
+	// SignSweepAsService is the service putting its own key to one.
+	//
+	// This is the one signing operation that legitimately stays here forever:
+	// the coordinator holds the oracle's key and its own third of the 2-of-3,
+	// and never a party's.
+	SignSweepAsService(ctx context.Context, c *domain.Contract, a *domain.Arbitration) ([]byte, error)
+}
+
+// Arbitrations stores the split the service proposes once a contract has left
+// Arkade, and the signatures collected for it.
+type Arbitrations interface {
+	Put(ctx context.Context, a *domain.Arbitration) error
+	ForContract(ctx context.Context, contract uuid.UUID) (*domain.Arbitration, error)
 }
 
 // Redemptions stores the one open early close a contract may have. Two would be
@@ -133,6 +150,17 @@ type Arkade interface {
 	// is the parties' contract keys, which the operator asks for again on the
 	// checkpoints it hands back.
 	SubmitRedemption(ctx context.Context, c *domain.Contract, r *domain.Redemption, sign []arkade.Signer) error
+
+	// LeaveArkade puts the contract's whole chain of transactions on the chain
+	// and then broadcasts the pre-signed exit, which is what a party does when
+	// they have given up on the operator. It returns where the money landed.
+	//
+	// It is minutes of wall clock: a chain to unroll one transaction per block,
+	// then a relative timelock to wait out.
+	LeaveArkade(ctx context.Context, c *domain.Contract, e domain.ExitPackage) (domain.Outpoint, int64, error)
+
+	// PayOut broadcasts a signed arbitration and returns its txid.
+	PayOut(ctx context.Context, c *domain.Contract, a *domain.Arbitration) (string, error)
 }
 
 // Pair is a settlement message and its immediate predecessor. The covenant

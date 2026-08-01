@@ -190,9 +190,9 @@ func (a *App) presignExit(ctx context.Context, c *domain.Contract) error {
 	return a.exits.Put(ctx, pkg)
 }
 
-// Exit is the pre-signed package, so a party can see it exists and hold their
-// own copy of it.
-func (a *App) Exit(ctx context.Context, id uuid.UUID) (domain.ExitPackage, error) {
+// ExitPackage is the pre-signed exit, so a party can see it exists and hold
+// their own copy of it.
+func (a *App) ExitPackage(ctx context.Context, id uuid.UUID) (domain.ExitPackage, error) {
 	return a.exits.Get(ctx, id)
 }
 

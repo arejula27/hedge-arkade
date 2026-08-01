@@ -171,6 +171,61 @@ Two things worth saying out loud while this happens:
   there is no script to run: the two signatures plus the operator's are the
   whole of the authority, and it goes straight to arkd.
 
+## The third way out: leaving without the operator
+
+Everything above assumes the operator answers. This is the path that does not,
+and it is the claim the whole design rests on.
+
+Do steps 1 to 4 again — two people, a contract, funded, `active`.
+
+### 1. Alice walks out
+
+In **tab A**, find *Leave without the operator* and press **Exit unilaterally**.
+
+It takes minutes, and the state sits at `exiting` while it does. Three things
+are happening:
+
+1. The contract lives offchain as a VTXO built on a chain of transactions
+   hanging off a batch commitment. That whole chain goes onto Bitcoin, one
+   transaction per block.
+2. Only then does the exit have an output to spend. It is the transaction *both
+   of them signed at funding*, before either needed it — nobody had to ask the
+   other, and nobody had to ask the operator.
+3. Its relative timelock has to mature, and then it sweeps into a 2-of-3
+   between alice, bob and this service.
+
+When it reads `exited`, the money is on Bitcoin and the covenant is gone with
+it.
+
+### 2. Move the price, then ask the service to arbitrate
+
+The covenant decided the split before. It cannot now — so the service does.
+
+Press **Crash to $50,000** under *Price*, then **Ask the service to arbitrate**.
+
+The panel shows the split, the price it came from, and the oracle's signed
+message. Read the signature count: **1 of the 2 the sweep needs**. The service
+signed its own half and that is as far as it goes.
+
+Those two facts together are the whole design of this step:
+
+- It **cannot invent the number.** Without a valid oracle signature the
+  arbitration refuses to be built at all.
+- It **cannot act on it.** Two of three keys move the money and it holds one.
+
+### 3. Bob checks it and signs
+
+In **tab B**, **Check it and sign**.
+
+The numbers are rebuilt from the oracle message printed in the panel and
+compared against the transaction before the signature is added — including
+against what the transaction actually pays, not just what the proposal says it
+pays.
+
+That makes two of three. The state goes `arbitrating` → `arbitrated`, and the
+panel shows the txid it was paid with. Both sides are paid on chain, and the
+operator was not involved in any of it.
+
 ## Doing it again
 
 Run it a second time with the same two people and you will hit this: after a
@@ -214,6 +269,10 @@ batch has been swept, and there is only one way to un-sweep it.
 - **Renewal.** A contract inherits the batch expiry of whatever funded it, so a
   long-lived one has to be swapped into a later batch before its own expires.
   That ceremony is not built.
+- **Collusion inside the 2-of-3.** The service plus one party can move the money
+  after an exit without the other. That is a known and accepted cost of having
+  a third key at all, and it is written down in
+  [unilateral-exit.md](unilateral-exit.md) rather than papered over.
 
 ## If something looks stuck
 

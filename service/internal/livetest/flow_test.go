@@ -297,6 +297,86 @@ func TestClosingEarly(t *testing.T) {
 	}
 }
 
+// The claim the whole design rests on, end to end: a party walks away from the
+// operator entirely.
+//
+// The contract's chain of transactions goes onto Bitcoin one block at a time,
+// the exit both parties signed at funding waits out its timelock and sweeps into
+// a 2-of-3, and then the service works out the split from an oracle-signed price
+// — a number it cannot invent and cannot act on alone.
+func TestLeavingWithoutTheOperator(t *testing.T) {
+	d := newDemo(t)
+
+	alice, bob := d.user("alice"), d.user("bob")
+	d.board(alice)
+	d.board(bob)
+
+	contract := d.accept(bob, d.propose(alice).ID)
+	d.fund(alice, contract.ID)
+	d.waitFor(contract.ID, "active", 3*time.Minute)
+
+	d.expect(&alice, http.MethodPost, "/api/contracts/"+contract.ID+"/exit", "",
+		http.StatusOK, nil)
+	d.waitFor(contract.ID, "exited", 5*time.Minute)
+
+	// A crash, so the numbers are worth looking at.
+	d.setPrice(lowBoundary)
+
+	var proposal struct {
+		ShortSats  int64  `json:"short_sats"`
+		LongSats   int64  `json:"long_sats"`
+		Price      int64  `json:"price"`
+		Message    string `json:"message"`
+		Available  int64  `json:"available"`
+		Signatures int    `json:"signatures"`
+		Signed     bool   `json:"signed"`
+		Txid       string `json:"txid"`
+	}
+	d.expect(nil, http.MethodPost, "/api/contracts/"+contract.ID+"/arbitration", "",
+		http.StatusCreated, &proposal)
+
+	if proposal.Message == "" {
+		t.Error("the proposal carries no evidence")
+	}
+	if proposal.Price != lowBoundary {
+		t.Errorf("arbitrated at %d, want the clamped %d", proposal.Price, lowBoundary)
+	}
+
+	// The service holds one of three keys and signs its own half. That is not
+	// enough, and it must not be.
+	if proposal.Signatures != 1 || proposal.Signed {
+		t.Fatalf("%d signatures, signed %v — the service alone moved the money",
+			proposal.Signatures, proposal.Signed)
+	}
+
+	// The fee comes out of both sides proportionally, so the short is a little
+	// under what the covenant would have paid offchain and the long a little
+	// under its dust floor.
+	if proposal.ShortSats <= proposal.LongSats {
+		t.Errorf("at the low boundary the short should take almost all of it, got %d/%d",
+			proposal.ShortSats, proposal.LongSats)
+	}
+	if proposal.ShortSats+proposal.LongSats >= proposal.Available {
+		t.Errorf("the payouts %d+%d do not leave a miner fee out of %d",
+			proposal.ShortSats, proposal.LongSats, proposal.Available)
+	}
+
+	// One party makes it two of three.
+	d.expect(&bob, http.MethodPost, "/api/contracts/"+contract.ID+"/arbitration/sign", "",
+		http.StatusOK, &proposal)
+	if !proposal.Signed {
+		t.Fatalf("%d signatures is not two", proposal.Signatures)
+	}
+
+	d.waitFor(contract.ID, "arbitrated", 3*time.Minute)
+
+	d.expect(nil, http.MethodGet, "/api/contracts/"+contract.ID+"/arbitration", "",
+		http.StatusOK, &proposal)
+	if proposal.Txid == "" {
+		t.Error("nothing was broadcast")
+	}
+}
+
 // A contract whose price is inside its boundaries has nothing to settle, and
 // the refusal has to say so rather than come back as a script failure.
 func TestSettlingTooEarlyIsRefused(t *testing.T) {

@@ -26,18 +26,24 @@ func (e ErrNotYet) Error() string { return e.Reason }
 
 // App is the use cases. It is built once, at startup, from the adapters.
 type App struct {
-	users       Users
-	contracts   Contracts
-	exits       Exits
-	redemptions Redemptions
-	signer      Signer
-	stack       Arkade
-	feed        Feed
+	users        Users
+	contracts    Contracts
+	exits        Exits
+	redemptions  Redemptions
+	arbitrations Arbitrations
+	signer       Signer
+	stack        Arkade
+	feed         Feed
 
 	// serviceKey is the third key of the 2-of-3 a unilateral exit sweeps into.
 	// It is the service's own and legitimately lives here: the coordinator
 	// holds this and the oracle's key, and never a party's.
 	serviceKey *btcec.PublicKey
+
+	// arbitrationFeeSats is what the transaction that empties the 2-of-3 pays a
+	// miner. It is a normal transaction built when it is needed, so it does not
+	// have to be as generous as the exit's.
+	arbitrationFeeSats int64
 
 	// exitFeeSats is what the unilateral exit pays a miner. It is generous:
 	// the transaction is ~180 vbytes and there is no second chance to fee-bump
@@ -48,13 +54,14 @@ type App struct {
 }
 
 type Options struct {
-	Users       Users
-	Contracts   Contracts
-	Exits       Exits
-	Redemptions Redemptions
-	Signer      Signer
-	Stack       Arkade
-	Feed        Feed
+	Users        Users
+	Contracts    Contracts
+	Exits        Exits
+	Redemptions  Redemptions
+	Arbitrations Arbitrations
+	Signer       Signer
+	Stack        Arkade
+	Feed         Feed
 
 	ServiceKey  *btcec.PublicKey
 	ExitFeeSats int64
@@ -77,18 +84,20 @@ func New(o Options) *App {
 	}
 
 	return &App{
-		users:       o.Users,
-		contracts:   o.Contracts,
-		exits:       o.Exits,
-		redemptions: o.Redemptions,
-		signer:      o.Signer,
-		stack:       o.Stack,
-		feed:        o.Feed,
+		users:        o.Users,
+		contracts:    o.Contracts,
+		exits:        o.Exits,
+		redemptions:  o.Redemptions,
+		arbitrations: o.Arbitrations,
+		signer:       o.Signer,
+		stack:        o.Stack,
+		feed:         o.Feed,
 
 		serviceKey: o.ServiceKey,
 
-		exitFeeSats: fee,
-		now:         now,
+		exitFeeSats:        fee,
+		arbitrationFeeSats: 2_000,
+		now:                now,
 	}
 }
 

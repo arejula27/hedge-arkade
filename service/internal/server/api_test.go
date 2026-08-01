@@ -667,3 +667,89 @@ func TestAnEarlyCloseThatIsNotThere(t *testing.T) {
 	requireStatus(t, h.post(t, "/api/contracts/"+c.ID+"/redemption/sign", "", h.Bob),
 		http.StatusConflict)
 }
+
+// --- Leaving without the operator -------------------------------------------
+
+func TestExitRefusals(t *testing.T) {
+	h := newHarness(t)
+	carol := h.AddUser(t, "carol", 0x25)
+	c := h.active(t)
+
+	requireStatus(t, h.post(t, "/api/contracts/"+c.ID+"/exit", "", carol), http.StatusForbidden)
+	requireStatus(t, h.post(t, "/api/contracts/"+c.ID+"/exit", "", uuid.Nil), http.StatusUnauthorized)
+}
+
+// The service decides the number and cannot move the money. Both halves are
+// visible from here.
+func TestArbitrateAndSign(t *testing.T) {
+	h := newHarness(t)
+	c := h.active(t)
+
+	rec := h.post(t, "/api/contracts/"+c.ID+"/exit", "", h.Alice)
+	requireStatus(t, rec, http.StatusOK)
+	h.work(t)
+
+	rec = h.get(t, "/api/contracts/"+c.ID, uuid.Nil)
+	var out contractResponse
+	decode(t, rec, &out)
+	if out.State != string(domain.Exited) {
+		t.Fatalf("state %q, want exited", out.State)
+	}
+
+	// Arbitrating needs no identity: whoever asks, the service has no
+	// discretion in the answer.
+	rec = h.post(t, "/api/contracts/"+c.ID+"/arbitration", "", uuid.Nil)
+	requireStatus(t, rec, http.StatusCreated)
+
+	var proposal arbitrationResponse
+	decode(t, rec, &proposal)
+	if proposal.Message == "" || proposal.Signature == "" {
+		t.Error("the proposal carries no evidence")
+	}
+	if proposal.Signatures != 1 || proposal.Signed {
+		t.Errorf("%d signatures, signed %v — the service alone is not enough",
+			proposal.Signatures, proposal.Signed)
+	}
+
+	rec = h.post(t, "/api/contracts/"+c.ID+"/arbitration/sign", "", h.Bob)
+	requireStatus(t, rec, http.StatusOK)
+
+	decode(t, rec, &proposal)
+	if !proposal.Signed {
+		t.Errorf("%d signatures is not two", proposal.Signatures)
+	}
+
+	h.work(t)
+
+	rec = h.get(t, "/api/contracts/"+c.ID, uuid.Nil)
+	decode(t, rec, &out)
+	if out.State != string(domain.Arbitrated) {
+		t.Errorf("state %q, want arbitrated", out.State)
+	}
+	if out.Arbitration == nil || out.Arbitration.Txid == "" {
+		t.Error("the contract does not carry the transaction it was paid with")
+	}
+}
+
+func TestArbitrationRefusals(t *testing.T) {
+	h := newHarness(t)
+	carol := h.AddUser(t, "carol", 0x25)
+	c := h.active(t)
+
+	t.Run("before the exit", func(t *testing.T) {
+		requireStatus(t, h.post(t, "/api/contracts/"+c.ID+"/arbitration", "", uuid.Nil),
+			http.StatusConflict)
+		requireStatus(t, h.get(t, "/api/contracts/"+c.ID+"/arbitration", uuid.Nil),
+			http.StatusNotFound)
+	})
+
+	requireStatus(t, h.post(t, "/api/contracts/"+c.ID+"/exit", "", h.Alice), http.StatusOK)
+	h.work(t)
+	requireStatus(t, h.post(t, "/api/contracts/"+c.ID+"/arbitration", "", uuid.Nil),
+		http.StatusCreated)
+
+	t.Run("a stranger cannot sign", func(t *testing.T) {
+		requireStatus(t, h.post(t, "/api/contracts/"+c.ID+"/arbitration/sign", "", carol),
+			http.StatusForbidden)
+	})
+}

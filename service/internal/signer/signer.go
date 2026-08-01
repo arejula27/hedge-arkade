@@ -12,6 +12,7 @@ package signer
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
 
 	"github.com/arejula27/hedge/arkade"
@@ -25,9 +26,15 @@ import (
 
 type Server struct {
 	wallets *wallets.Registry
+
+	// serviceKey is the service's own third of the 2-of-3 a unilateral exit
+	// sweeps into. It is one of only two keys the coordinator ever holds.
+	serviceKey *btcec.PrivateKey
 }
 
-func New(w *wallets.Registry) *Server { return &Server{wallets: w} }
+func New(w *wallets.Registry, serviceKey *btcec.PrivateKey) *Server {
+	return &Server{wallets: w, serviceKey: serviceKey}
+}
 
 func (s *Server) PublicKey(ctx context.Context, user uuid.UUID) (*btcec.PublicKey, error) {
 	key, err := s.wallets.Key(ctx, user)
@@ -100,4 +107,76 @@ func (s *Server) SignExit(
 	}
 
 	return covenant.SignExit(key, &tx, exit.Amount)
+}
+
+// SignSweep signs an arbitration spending the 2-of-3 the exit landed in.
+//
+// The service holds the third key and signs its own half elsewhere. Two of
+// three is the whole point: the service decides the number and cannot move the
+// money, and a party moves the money and does not decide the number.
+func (s *Server) SignSweep(
+	ctx context.Context, user uuid.UUID, c *domain.Contract, a *domain.Arbitration,
+) ([]byte, error) {
+	key, err := s.wallets.Key(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+
+	covenant, sweep, err := s.sweepOf(c)
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := parseTx(a.RawTx)
+	if err != nil {
+		return nil, err
+	}
+
+	return covenant.SignArbitration(key, &contract.Arbitration{Tx: tx}, sweep, a.Available)
+}
+
+// SignSweepAsService is the service putting its own key to an arbitration.
+//
+// This one is legitimately here forever: the coordinator holds the oracle's key
+// and its own third of the 2-of-3, and never a party's.
+func (s *Server) SignSweepAsService(
+	_ context.Context, c *domain.Contract, a *domain.Arbitration,
+) ([]byte, error) {
+	covenant, sweep, err := s.sweepOf(c)
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := parseTx(a.RawTx)
+	if err != nil {
+		return nil, err
+	}
+
+	return covenant.SignArbitration(s.serviceKey, &contract.Arbitration{Tx: tx}, sweep, a.Available)
+}
+
+func (s *Server) sweepOf(c *domain.Contract) (contract.Contract, *contract.Sweep, error) {
+	covenant, err := c.Covenant()
+	if err != nil {
+		return contract.Contract{}, nil, err
+	}
+
+	sweep, err := contract.NewSweep(covenant.Keys.Short, covenant.Keys.Long, s.serviceKey.PubKey())
+	if err != nil {
+		return contract.Contract{}, nil, fmt.Errorf("rebuilding the sweep: %w", err)
+	}
+	return covenant, sweep, nil
+}
+
+func parseTx(rawHex string) (*wire.MsgTx, error) {
+	raw, err := hex.DecodeString(rawHex)
+	if err != nil {
+		return nil, fmt.Errorf("the transaction is not hex: %w", err)
+	}
+
+	var tx wire.MsgTx
+	if err := tx.Deserialize(bytes.NewReader(raw)); err != nil {
+		return nil, fmt.Errorf("reading the transaction: %w", err)
+	}
+	return &tx, nil
 }

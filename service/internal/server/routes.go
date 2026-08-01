@@ -57,6 +57,12 @@ func (s *Server) Routes(allowOrigin string) http.Handler {
 	api.POST("/contracts/:id/redemption/sign", s.signRedemption, s.identified)
 	api.POST("/contracts/:id/redemption/reject", s.rejectRedemption, s.identified)
 
+	// Leaving Arkade, and the split that follows once the covenant is gone.
+	api.POST("/contracts/:id/exit", s.exit, s.identified)
+	api.GET("/contracts/:id/arbitration", s.showArbitration)
+	api.POST("/contracts/:id/arbitration", s.arbitrate)
+	api.POST("/contracts/:id/arbitration/sign", s.signArbitration, s.identified)
+
 	// The oracle is proxied so the frontend has one origin, and so the UI never
 	// has to know it is a separate process.
 	api.GET("/oracle", s.oracle)

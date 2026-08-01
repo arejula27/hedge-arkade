@@ -51,13 +51,20 @@ func NewWorker(a *App, o WorkerOptions) *Worker {
 // transient is every state that means there is work outstanding, with where a
 // contract goes when it has been stuck in one for too long.
 //
-// Settling gives up back to active rather than to a state of its own: a
-// settlement the emulator refuses leaves the contract exactly as it was, still
-// funded and still settleable.
+// Every one of them gives up back where it came from rather than to a state of
+// its own: a settlement the emulator refuses leaves the contract exactly as it
+// was, still funded and still settleable. Funding is the exception, because a
+// contract that was never funded is not one anybody can do anything with.
 var transient = map[domain.State]domain.State{
 	domain.Funding:   domain.Failed,
 	domain.Settling:  domain.Active,
 	domain.Redeeming: domain.Active,
+
+	// Exiting and arbitrating give up back where they came from too. An exit
+	// that could not be broadcast changed nothing, and an arbitration nobody
+	// signed can be proposed again.
+	domain.Exiting:     domain.Active,
+	domain.Arbitrating: domain.Exited,
 }
 
 func (w *Worker) Run(ctx context.Context) {
@@ -110,6 +117,10 @@ func (w *Worker) advance(ctx context.Context, c *domain.Contract) {
 		err = w.app.finishSettling(ctx, c)
 	case domain.Redeeming:
 		err = w.app.finishRedeeming(ctx, c)
+	case domain.Exiting:
+		err = w.app.finishExiting(ctx, c)
+	case domain.Arbitrating:
+		err = w.app.finishArbitrating(ctx, c)
 	default:
 		return
 	}

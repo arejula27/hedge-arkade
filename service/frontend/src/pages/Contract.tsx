@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useParams } from 'react-router'
 import { api, currentUser } from '../api'
 import { EarlyClose } from '../components/EarlyClose'
+import { Exit } from '../components/Exit'
 import { PriceBar } from '../components/PriceBar'
 import { Split } from '../components/Split'
 import { Button, Field, Notice, Panel, StateBadge } from '../components/ui'
@@ -94,6 +95,8 @@ export function ContractPage() {
 
       <EarlyClose contract={contract} me={me} onChanged={reload} />
 
+      <Exit contract={contract} me={me} onChanged={reload} />
+
       <Panel title="The contract">
         <Details contract={contract} />
       </Panel>
@@ -166,7 +169,8 @@ function Actions({
 
       {(contract.state === 'funding' ||
         contract.state === 'settling' ||
-        contract.state === 'redeeming') && (
+        contract.state === 'redeeming' ||
+        contract.state === 'arbitrating') && (
         <span className="text-xs text-muted">
           Working. This takes tens of seconds against a live stack, and it survives a restart.
         </span>

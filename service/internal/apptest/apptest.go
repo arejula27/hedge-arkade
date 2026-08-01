@@ -221,6 +221,32 @@ func (s *Redemptions) Drop(_ context.Context, contract uuid.UUID) error {
 	return nil
 }
 
+// Arbitrations is the split the service proposes after an exit.
+type Arbitrations struct {
+	Stored map[uuid.UUID]domain.Arbitration
+	Fail   error
+}
+
+func NewArbitrations() *Arbitrations {
+	return &Arbitrations{Stored: map[uuid.UUID]domain.Arbitration{}}
+}
+
+func (s *Arbitrations) Put(_ context.Context, a *domain.Arbitration) error {
+	if s.Fail != nil {
+		return s.Fail
+	}
+	s.Stored[a.ContractID] = *a
+	return nil
+}
+
+func (s *Arbitrations) ForContract(_ context.Context, contract uuid.UUID) (*domain.Arbitration, error) {
+	a, ok := s.Stored[contract]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	return &a, nil
+}
+
 type Exits struct {
 	Stored map[uuid.UUID]domain.ExitPackage
 	Fail   error
@@ -248,12 +274,14 @@ func (s *Exits) Get(_ context.Context, id uuid.UUID) (domain.ExitPackage, error)
 // point of the port is that no use case ever sees one, and a stub that returned
 // made-up bytes would not exercise that.
 type Signer struct {
-	Keys      map[uuid.UUID]*btcec.PrivateKey
-	FailExit  error
-	FailLeaf  error
-	WrongKey  *btcec.PrivateKey
-	SignCalls int
-	LeafCalls int
+	Keys       map[uuid.UUID]*btcec.PrivateKey
+	FailExit   error
+	FailLeaf   error
+	FailSweep  error
+	WrongKey   *btcec.PrivateKey
+	SignCalls  int
+	LeafCalls  int
+	SweepCalls int
 }
 
 func NewSigner() *Signer {
@@ -285,6 +313,28 @@ func (s *Signer) SignLeaf(_ context.Context, user uuid.UUID, packetB64 string) (
 	}
 	s.LeafCalls++
 	return packetB64 + "|" + user.String(), nil
+}
+
+// SignSweep signs for real: the arbitration's transaction is a real one, and
+// what the 2-of-3 accepts is exactly what these produce.
+func (s *Signer) SignSweep(
+	_ context.Context, user uuid.UUID, c *domain.Contract, a *domain.Arbitration,
+) ([]byte, error) {
+	if s.FailSweep != nil {
+		return nil, s.FailSweep
+	}
+	s.SweepCalls++
+	return fmt.Appendf(nil, "sweep-%s", user), nil
+}
+
+func (s *Signer) SignSweepAsService(
+	_ context.Context, _ *domain.Contract, _ *domain.Arbitration,
+) ([]byte, error) {
+	if s.FailSweep != nil {
+		return nil, s.FailSweep
+	}
+	s.SweepCalls++
+	return []byte("sweep-service"), nil
 }
 
 func (s *Signer) SignExit(
@@ -335,6 +385,11 @@ type Arkade struct {
 	Redeemed        *domain.Redemption
 	RedeemedFinal   []string
 	SubmitRedeemErr error
+
+	Exited    bool
+	ExitErr   error
+	PaidOut   *domain.Arbitration
+	PayOutErr error
 }
 
 func NewArkade() *Arkade {
@@ -405,6 +460,29 @@ func (s *Arkade) Settle(_ context.Context, c *domain.Contract, short, long int64
 	s.Settled = c
 	s.SettleAt = [2]int64{short, long}
 	return nil
+}
+
+func (s *Arkade) LeaveArkade(
+	_ context.Context, _ *domain.Contract, e domain.ExitPackage,
+) (domain.Outpoint, int64, error) {
+	if s.ExitErr != nil {
+		return domain.Outpoint{}, 0, s.ExitErr
+	}
+	s.Exited = true
+	return domain.Outpoint{
+		Txid: "0000000000000000000000000000000000000000000000000000000000000002",
+		Vout: 0,
+	}, e.Amount - 2_000, nil
+}
+
+func (s *Arkade) PayOut(
+	_ context.Context, _ *domain.Contract, a *domain.Arbitration,
+) (string, error) {
+	if s.PayOutErr != nil {
+		return "", s.PayOutErr
+	}
+	s.PaidOut = a
+	return "0000000000000000000000000000000000000000000000000000000000000003", nil
 }
 
 func (s *Arkade) BuildRedemption(
@@ -524,14 +602,15 @@ var FixedNow = time.Unix(1_800_000_000, 0)
 
 // Fixture is the whole app with stubs behind it, plus two users who have money.
 type Fixture struct {
-	App             *app.App
-	UserStore       *Users
-	ContractStore   *Contracts
-	ExitStore       *Exits
-	RedemptionStore *Redemptions
-	SignerStub      *Signer
-	StackStub       *Arkade
-	FeedStub        *Feed
+	App              *app.App
+	UserStore        *Users
+	ContractStore    *Contracts
+	ExitStore        *Exits
+	RedemptionStore  *Redemptions
+	ArbitrationStore *Arbitrations
+	SignerStub       *Signer
+	StackStub        *Arkade
+	FeedStub         *Feed
 
 	Alice, Bob uuid.UUID
 
@@ -559,6 +638,7 @@ func New(t *testing.T) *Fixture {
 	f.ContractStore = NewContracts(clock)
 	f.ExitStore = NewExits()
 	f.RedemptionStore = NewRedemptions()
+	f.ArbitrationStore = NewArbitrations()
 	f.SignerStub = NewSigner()
 	f.StackStub = NewArkade()
 	f.FeedStub = NewFeed(10_000_000)
@@ -581,13 +661,14 @@ func New(t *testing.T) *Fixture {
 // because Advance is the only way a contract moves.
 func (f *Fixture) Options(contracts app.Contracts) app.Options {
 	return app.Options{
-		Users:       f.UserStore,
-		Contracts:   contracts,
-		Exits:       f.ExitStore,
-		Redemptions: f.RedemptionStore,
-		Signer:      f.SignerStub,
-		Stack:       f.StackStub,
-		Feed:        f.FeedStub,
+		Users:        f.UserStore,
+		Contracts:    contracts,
+		Exits:        f.ExitStore,
+		Redemptions:  f.RedemptionStore,
+		Arbitrations: f.ArbitrationStore,
+		Signer:       f.SignerStub,
+		Stack:        f.StackStub,
+		Feed:         f.FeedStub,
 
 		ServiceKey:  f.ServiceKey,
 		ExitFeeSats: 2_000,

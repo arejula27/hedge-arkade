@@ -78,6 +78,13 @@ func (h *harness) post(t *testing.T, path, body string, as uuid.UUID) *httptest.
 	return h.do(t, http.MethodPost, path, body, as)
 }
 
+// work runs the worker once, which is what finishes every step that outlives
+// the request that started it.
+func (h *harness) work(t *testing.T) {
+	t.Helper()
+	app.NewWorker(h.App, app.WorkerOptions{}).Tick(t.Context())
+}
+
 func decode(t *testing.T, rec *httptest.ResponseRecorder, into any) {
 	t.Helper()
 
