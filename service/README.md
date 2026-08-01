@@ -4,10 +4,13 @@ The web service. Generated with [go-blueprint](https://github.com/melkeydev/go-b
 (`--framework echo --driver postgres --feature react,tailwind,docker`) and then rearranged.
 
 ```sh
-just migrate  # postgres, and the schema
-just oracle   # the oracle on :8081
-just dev      # the API on :8080 and the Vite dev server on :5173
-just run      # the API alone
+just demo         # the whole thing, from nothing: chain, database, two people, three processes
+just demo-clean   # and everything it made, gone
+
+just migrate      # postgres, and the schema
+just oracle       # the oracle on :8081
+just dev          # the API on :8080 and the Vite dev server on :5173
+just stop         # whatever is left listening on those ports
 ```
 
 Migrating is its own step because two services share one database. If both
@@ -87,13 +90,18 @@ that a `BIGSERIAL` fails.
 
 ## Tests
 
-| | `just test-service` | `just test-service-integration` |
-|---|---|---|
-| Needs | nothing | Docker |
-| Covers | domain, use cases, every endpoint, the event stream | the repositories and the oracle's storage against a real postgres |
+| | `just test-service` | `just test-service-integration` | `just test-demo` |
+|---|---|---|---|
+| Needs | nothing | Docker | Docker and a live stack |
+| Covers | domain, use cases, every endpoint, the event stream | the repositories and the oracle's storage against a real postgres | the whole demo, end to end |
 
 The second tier is behind the `integration` build tag and starts its own throwaway postgres with
 testcontainers, so it needs no stack to be up first.
+
+`just test-demo` is the one that says the demo works rather than that it worked once on somebody's
+laptop: real arkd, real emulator, real bitcoind, a real oracle, a real postgres, and requests going
+in through the same router a browser uses. It asserts the payouts land as spendable VTXOs in the
+parties' own wallets, which is the thing a bare P2TR would get wrong invisibly.
 
 The stubs behind the use cases live in `internal/apptest` rather than in one suite's test files,
 because two suites need them: the use cases' own, and the HTTP layer's, which drives requests

@@ -43,10 +43,8 @@ depend on it — so the tests exercise the code that runs in production rather t
 of it. Everything depends on `contract/` through a `replace`.
 
 ```sh
-AUTOMINE_INTERVAL=10 just regtest-reset   # arkd and the emulator, on an empty chain
-just migrate                              # postgres, and the schema
-just oracle                               # signed prices, in its own terminal
-just dev                                  # the API on :8080 and the web on :5173
+just demo         # a clean chain, a clean database, two people with money, three processes
+just demo-clean   # and everything it made, gone
 ```
 
 Then two browser tabs on <http://localhost:5173>, one person in each —

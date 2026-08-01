@@ -52,7 +52,7 @@ jobs:
 
       # ubuntu-latest ships Docker and the compose plugin.
       - name: Start the regtest stack
-        run: nix develop --command just regtest-up
+        run: nix develop --command just regtest-reset
 
       - name: Run the integration tests
         run: nix develop --command just test-integration
@@ -60,6 +60,10 @@ jobs:
       # The service's own tier: a throwaway postgres, no arkd involved.
       - name: Run the service integration tests
         run: nix develop --command just test-service-integration
+
+      # And the demo itself, end to end.
+      - name: Run the demo against the live stack
+        run: nix develop --command just test-demo
 
       - name: Stack logs
         if: failure()

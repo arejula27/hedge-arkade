@@ -4,26 +4,31 @@ Two people open a hedge position against each other, the price moves, and the
 contract settles itself. Everything below runs against a real arkd and a real
 emulator on regtest — nothing is mocked.
 
-## What you need up
-
-Four things, in this order. Each is a `just` recipe.
+## Starting it
 
 ```sh
-AUTOMINE_INTERVAL=10 just regtest-reset   # bitcoind, arkd, arkd-wallet, emulator
-just migrate                              # postgres, and the schema
-just oracle                               # in its own terminal — publishes every 5s
-just dev                                  # in another — the API on :8080, the web on :5173
+just demo
 ```
 
-`regtest-reset` starts on an empty chain. Do that rather than `regtest-up`: a
-stack left over from a previous run has its block height wherever a timelock
-test put it, and bitcoind comes back with no wallet loaded.
+That is the whole thing: an empty chain with arkd and the emulator on it, a
+fresh database, alice and bob with 0.5 BTC each, and the oracle, the API and the
+web server. It takes a few minutes the first time, mostly waiting for the stack
+to come up.
 
-`AUTOMINE_INTERVAL=10` makes the chain mine a block every ten seconds. Without
-it nothing mines, and boarding never confirms. The tests want the opposite —
-they need the height to stay still — which is why it is not the default.
+Ctrl-C stops the three processes. `just demo-clean` takes down everything it
+made — containers, volumes, the regtest clone — and `just stop` kills whatever
+is still listening if a trap did not fire.
 
-Then open **two browser tabs** on <http://localhost:5173>.
+Two things it does that are worth knowing about. It starts the chain **on an
+empty history**, because a stack left over from a previous run has its block
+height wherever a timelock test put it and bitcoind comes back with no wallet
+loaded. And it sets **`AUTOMINE_INTERVAL=10`**, so a block is mined every ten
+seconds — without that nothing mines and boarding never confirms. The tests want
+the opposite, a height that only moves when they ask, which is why it is not the
+default.
+
+When it says the demo is ready, open **two browser tabs** on
+<http://localhost:5173>.
 
 The demo is two people, and the switcher is per tab: pick one person in each
 and both stay signed in at once. One tab is not enough, and one tab switching
@@ -34,22 +39,21 @@ did not touch it.
 
 ### 1. Be somebody, in each tab
 
-- **Tab A** → the page asks *Who is at this tab?* → type `alice` → **Create**.
-- **Tab B** → type `bob` → **Create**.
+The page asks *Who is at this tab?* and alice and bob are already there, with
+money — `just demo` boarded them so the first thing you do is open a contract
+rather than wait for a faucet.
 
-Each gets an Arkade wallet. From here the two tabs are two people.
+- **Tab A** → **alice**.
+- **Tab B** → **bob**.
 
-### 2. Give them money
+Both should read about **49,500,000 sats** spendable. (The half a million that
+is missing is the operator's fee for boarding.)
 
-In **both** tabs: **Top up 0.5 BTC**, top right of *Your wallet*.
+If you want more people, **Top up 0.5 BTC** on the wallet card does the same
+thing for whoever is at that tab. It takes a minute — the faucet has to confirm
+and a batch has to close — and the balance updates on its own.
 
-This takes about a minute each. It pays the regtest faucet, waits for the
-payment to confirm, and then settles the boarding output into a VTXO. The
-balance updates on its own when it lands — don't press it twice.
-
-Wait until both tabs read **50,000,000 sats** spendable.
-
-### 3. Alice offers a position
+### 2. Alice offers a position
 
 In **tab A**:
 
@@ -64,7 +68,7 @@ You land on the contract page. There is no address yet, and that is not a
 loading state: the address is a function of *both* payout scripts, and only
 one of them exists so far.
 
-### 4. Bob takes the other side
+### 3. Bob takes the other side
 
 In **tab B**:
 
@@ -75,7 +79,7 @@ Now there is an address, and each side's stake — 10,000,000 sats each. That is
 exactly what the covenant would pay them back at today's price, so a contract
 that settled this instant would move nothing.
 
-### 5. Fund it
+### 4. Fund it
 
 In **either** tab, on the contract page: **Fund it**.
 
@@ -91,7 +95,7 @@ That happened during funding, before either of them needs it: from here either
 one can leave alone after the delay, without the other and without the
 operator.
 
-### 6. Crash the price
+### 5. Crash the price
 
 On the contract page, under *Price*: **Crash to $50,000**.
 
@@ -102,7 +106,7 @@ Look at *What it would pay right now*: the short is up to **19,998,668 sats**
 and the long is down to **1,332** — the dust floor. Alice's hedge was paid in
 full and Bob took the loss, which is what he signed up for.
 
-### 7. Settle
+### 6. Settle
 
 **Settle**.
 
@@ -113,7 +117,7 @@ Nobody had to authorise this. The settlement leaf carries no party key at all
 — which is the point, because a contract that has liquidated must not need the
 losing side to cooperate.
 
-### 8. Check the money is really there
+### 7. Check the money is really there
 
 Go back to the **Lobby** in each tab and read *Spendable*.
 

@@ -6,6 +6,10 @@
 # Run from the repo root so nix finds the flake without searching upwards.
 go := "nix develop --command bash -c"
 
+# How often the demo's chain mines. The tests want the opposite — a height that
+# only moves when they ask — which is why this is not the default.
+automine := "10"
+
 _default:
     @just --list
 
@@ -13,7 +17,7 @@ _default:
 check: fmt-check vet test test-arkade test-service
 
 # Everything, including the live stack. Needs Docker, and starts it clean.
-check-all: check regtest-reset test-integration test-service-integration
+check-all: check regtest-reset test-integration test-service-integration test-demo
 
 # Covenant tests against the real Arkade VM.
 test:
@@ -99,6 +103,12 @@ test-integration:
 test-service-integration:
     @{{go}} 'cd service && go test -tags integration -count=1 -v ./...'
 
+# The whole demo against the live stack: two people, a contract, a crash, a
+# settlement, and the sats landing in wallets that can spend them. This is the
+# test that says the demo works rather than that it worked once on a laptop.
+test-demo:
+    @{{go}} 'cd service && go test -tags livestack -count=1 -v -timeout 20m ./internal/livetest/'
+
 # --- Service -----------------------------------------------------------------
 #
 # The web service and its frontend. The database here is the service's own and
@@ -131,11 +141,62 @@ web-build: web-install
 web-lint: web-install
     @{{go}} 'npm --prefix service/frontend run lint'
 
-# Bring the schema up to date.
-#
+# --- The demo ----------------------------------------------------------------
+
+# Ctrl-C stops the three processes. The containers keep running, so the next
+# `just demo` is faster; `just demo-clean` takes them down too.
+
+# The whole demo: clean chain, clean database, two people with money.
+demo: env web-install
+    @echo "==> regtest, on an empty chain"
+    @AUTOMINE_INTERVAL={{automine}} ./scripts/regtest.sh reset
+    @echo "==> postgres, from scratch"
+    @just db-clean >/dev/null 2>&1 || true
+    @just migrate
+    @echo "==> waiting for arkd and the emulator to answer"
+    @{{go}} 'cd arkade && go run ./cmd/waitstack'
+    @echo "==> two people with 0.5 BTC each, which takes a minute"
+    @{{go}} 'cd service && go run ./cmd/seed'
+    @echo
+    @echo "  the demo is at http://localhost:5173 — open it in two tabs"
+    @echo "  the walkthrough is in doc/demo.md"
+    @echo
+    @{{go}} 'trap "kill 0" EXIT INT TERM; \
+             (cd service && go run ./cmd/oracle) & \
+             (cd service && go run ./cmd/api) & \
+             npm --prefix service/frontend run dev'
+
+# Stop the demo's processes and its containers, keeping the data.
+demo-down: stop regtest-down db-down
+
+# The processes, the containers, both volumes, and the regtest clone. The next
+# `just demo` starts from nothing and re-clones the stack.
+
+# Delete everything the demo made.
+demo-clean: stop
+    @-just regtest-clean
+    @-just db-clean
+    @echo "==> gone"
+
+# `just demo` runs the three under one trap, so Ctrl-C is normally enough. This
+# is for when they were started some other way, or when a trap did not fire.
+
+# Stop whatever is listening on the demo's ports.
+stop:
+    @{{go}} 'for port in 8080 8081 5173; do \
+                 pids=$(ss -tlnp 2>/dev/null | grep -oP ":$port\s.*pid=\K[0-9]+" | sort -u); \
+                 for pid in $pids; do kill "$pid" 2>/dev/null && echo "stopped $pid on :$port"; done; \
+             done; true'
+
+# Two people with money, on whatever database is up.
+seed: migrate
+    @{{go}} 'cd service && go run ./cmd/seed'
+
 # Its own step because two services share one database: if both migrated at
 # startup they would race, one creating tables while the other read a schema
 # that was half there.
+
+# Bring the schema up to date.
 migrate: db-up
     @{{go}} 'cd service && go run ./cmd/migrate'
 

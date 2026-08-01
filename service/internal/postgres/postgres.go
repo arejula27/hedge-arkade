@@ -33,6 +33,11 @@ func Open(ctx context.Context, dsn string) (*DB, error) {
 	return &DB{pool: pool}, nil
 }
 
+// Pool is the connection underneath. It exists for the tests that have to
+// empty the tables between runs, and for nothing else — everything the service
+// does goes through a repository.
+func (db *DB) Pool() *sql.DB { return db.pool }
+
 func (db *DB) Close() error { return db.pool.Close() }
 
 // Health is what the readiness endpoint reports.

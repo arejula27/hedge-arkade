@@ -34,17 +34,19 @@ type Options struct {
 	AllowManual bool
 }
 
-func New(p *oracle.Publisher, store oracle.Store, opts Options) *http.Server {
-	s := &Server{
+func NewServer(p *oracle.Publisher, store oracle.Store, opts Options) *Server {
+	return &Server{
 		publisher:   p,
 		store:       store,
 		interval:    opts.Interval,
 		allowManual: opts.AllowManual,
 	}
+}
 
+func New(p *oracle.Publisher, store oracle.Store, opts Options) *http.Server {
 	return &http.Server{
 		Addr:         fmt.Sprintf(":%d", opts.Port),
-		Handler:      s.Routes(),
+		Handler:      NewServer(p, store, opts).Routes(),
 		IdleTimeout:  time.Minute,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
