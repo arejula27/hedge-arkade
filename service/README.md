@@ -17,18 +17,42 @@ Dependencies point inwards. Nothing below `internal/server` imports echo, and no
 `internal/postgres` knows SQL exists.
 
 ```
-cmd/api            composition root — the only place that wires the layers together
-internal/server    transport: echo, routes, handlers. The framework stops here
-internal/postgres  storage adapter: the connection pool and the health probe
-internal/config    the environment, read once at startup into typed values
-frontend           Vite + React + TypeScript, Tailwind v4
+cmd/api              composition root — the only place that wires the layers together
+cmd/oracle           the oracle's composition root
+internal/server      transport: echo, routes, handlers. The framework stops here
+internal/oracleserver the oracle's transport. echo lives in these two and nowhere else
+internal/oracle      the publisher and its storage port. No HTTP, no SQL
+internal/postgres    storage adapter: the pool, the health probe, the migrations
+internal/config      the environment, read once at startup into typed values
+frontend             Vite + React + TypeScript, Tailwind v4
 ```
 
-The domain package joins them when the first use case arrives, along with the `replace` onto
-`covenant`. There is no empty interface waiting for it: a port with no methods documents nothing.
+The domain package joins them when the first contract use case arrives. There is no empty
+interface waiting for it: a port with no methods documents nothing.
 
 `GET /` is the demo endpoint the generated frontend's "Fetch from Server" button calls. It goes
 when there is something real to serve.
+
+## The oracle
+
+A separate binary on `:8081`, because it is a separate thing: it knows about no contract, holds no
+funds, and could be run by someone else entirely. It shares only the database.
+
+```sh
+just oracle   # publishes every ORACLE_INTERVAL_SECONDS
+curl localhost:8081/oracle/pair
+curl -X POST localhost:8081/oracle/price -d '{"price":5000000}' -H 'Content-Type: application/json'
+```
+
+`/oracle/pair` serves a message *and its immediate predecessor* rather than letting a caller
+assemble the two, because the oracle is the only thing that can promise they are adjacent — and
+that adjacency is what pins settlement to the first message published after maturity.
+
+The sequence has to be dense, so it is allocated by the application under an advisory lock rather
+than by a `BIGSERIAL`. A Postgres sequence is monotonic but not gapless: a rolled-back transaction
+burns its number, and a burnt number can never be published, which makes every settlement that
+would have needed it as a predecessor impossible. `TestAppendIsDenseUnderConcurrency` is the test
+that a `BIGSERIAL` fails.
 
 ## Tests
 

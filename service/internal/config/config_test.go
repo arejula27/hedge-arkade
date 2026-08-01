@@ -99,6 +99,8 @@ func setEnv(t *testing.T, env map[string]string) {
 		"PORT", "APP_ENV",
 		"DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD",
 		"DB_SSLMODE", "DB_SCHEMA",
+		"ORACLE_PORT", "ORACLE_INTERVAL_SECONDS", "ORACLE_SEED",
+		"ORACLE_START_PRICE", "ORACLE_ALLOW_MANUAL",
 	} {
 		t.Setenv(name, "")
 	}

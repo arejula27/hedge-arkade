@@ -135,6 +135,10 @@ web-lint: web-install
 run: env
     @{{go}} 'cd service && go run ./cmd/api'
 
+# The oracle alone, on $ORACLE_PORT. It migrates the schema on the way up.
+oracle: db-up
+    @{{go}} 'cd service && go run ./cmd/oracle'
+
 # The API and the Vite dev server together. Ctrl-C stops both.
 dev: db-up web-install
     @{{go}} 'trap "kill 0" EXIT INT TERM; \
