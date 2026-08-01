@@ -53,15 +53,37 @@ load_existing_wallet() {
     bitcoin_cli loadwallet "$name" >/dev/null 2>&1
 }
 
+start() {
+    fetch
+    if ! ( cd "$DIR" && node regtest.mjs start --profile emulator ); then
+        # bitcoind is running by the time the wallet step fails, so the
+        # wallet can be loaded now and the start resumed.
+        load_existing_wallet || exit 1
+        ( cd "$DIR" && node regtest.mjs start --profile emulator )
+    fi
+}
+
+# Every service is profile-gated, so compose ignores them all unless the
+# profiles are named (lib/compose.mjs:39).
+compose() {
+    docker compose \
+        -f "$DIR/docker/compose.base.yml" -f "$DIR/docker/compose.ark.yml" \
+        --profile base --profile ark --profile emulator "$@"
+}
+
 case "${1:-}" in
     up)
-        fetch
-        if ! ( cd "$DIR" && node regtest.mjs start --profile emulator ); then
-            # bitcoind is running by the time the wallet step fails, so the
-            # wallet can be loaded now and the start resumed.
-            load_existing_wallet || exit 1
-            ( cd "$DIR" && node regtest.mjs start --profile emulator )
-        fi
+        start
+        ;;
+    # reset — a clean chain, keeping the clone.
+    #
+    # Restarting on yesterday's volumes is how a run reads another run's state:
+    # the height is wherever a timelock test left it, and bitcoind comes back
+    # with no wallet loaded. `clean` would fix that too but also deletes the
+    # clone, so every start pays for a fresh git clone and an image check.
+    reset)
+        [ -d "$DIR" ] && ( cd "$DIR" && node regtest.mjs clean ) || true
+        start
         ;;
     down)
         [ -d "$DIR" ] && ( cd "$DIR" && node regtest.mjs stop ) || true
@@ -70,8 +92,12 @@ case "${1:-}" in
         [ -d "$DIR" ] && ( cd "$DIR" && node regtest.mjs clean ) || true
         rm -rf "$DIR"
         ;;
+    # logs [service...] — straight to compose. regtest.mjs has no logs command
+    # (its switch is start|stop|clean|faucet|mine|reorg|rpc|ark|arkd|...), so
+    # this used to fail with "unknown command" in the one place it is reached:
+    # CI's failure path.
     logs)
-        ( cd "$DIR" && node regtest.mjs logs "${@:2}" )
+        compose logs "${@:2}"
         ;;
     # faucet <address> <amountBtc> — pays and confirms, so a caller only has to
     # wait for arkd to notice rather than for a block.
@@ -101,7 +127,7 @@ case "${1:-}" in
             testmempoolaccept "[\"$2\"]"
         ;;
     *)
-        echo "usage: $0 {up|down|clean|logs|faucet <addr> <btc>|mine [n]|minetx <hex>|testaccept <hex>}" >&2
+        echo "usage: $0 {up|reset|down|clean|logs|faucet <addr> <btc>|mine [n]|minetx <hex>|testaccept <hex>}" >&2
         exit 64
         ;;
 esac
