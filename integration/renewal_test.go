@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/arejula27/hedge/arkade"
 	"github.com/arejula27/hedge/contract"
 	arklib "github.com/arkade-os/arkd/pkg/ark-lib"
 	"github.com/arkade-os/arkd/pkg/ark-lib/intent"
@@ -222,7 +223,7 @@ func renewalIntent(
 	if fee > 0 {
 		payer := feeCoin(t, p)
 		change := payer.input.WitnessUtxo.Value - fee
-		if change < int64(stack.dust) {
+		if change < int64(stack.Dust) {
 			t.Fatalf("the party's coin holds %d, not enough to pay a %d sat fee",
 				payer.input.WitnessUtxo.Value, fee)
 		}
@@ -269,14 +270,14 @@ func renewalFee(
 
 	// Seeded above zero so the first quote already prices the shape that will
 	// be registered, fee coin and change included.
-	fee := int64(stack.dust)
+	fee := int64(stack.Dust)
 
 	for range 6 {
 		proof, message := renewalIntent(
 			t, p, c, outpoint, leaf, fee, intent.IntentMessageTypeEstimateFee,
 		)
-		quoted, err := p.arkd.EstimateIntentFee(
-			t.Context(), signIntent(t, proof, short, long, p.privKey), message,
+		quoted, err := p.Arkd().EstimateIntentFee(
+			t.Context(), signIntent(t, proof, short, long, p.PrivateKey()), message,
 		)
 		if err != nil {
 			t.Fatalf("EstimateIntentFee: %v", err)
@@ -308,10 +309,10 @@ func registerRenewal(
 		t, p, c, outpoint, leaf, fee, intent.IntentMessageTypeRegister,
 	)
 	if fee > 0 {
-		signers = append(signers, p.privKey)
+		signers = append(signers, p.PrivateKey())
 	}
 
-	return p.arkd.RegisterIntent(t.Context(), signIntent(t, proof, signers...), message)
+	return p.Arkd().RegisterIntent(t.Context(), signIntent(t, proof, signers...), message)
 }
 
 // renew swaps the contract VTXO for a fresh one in a new batch, and returns
@@ -334,8 +335,8 @@ func renew(
 		t, p, c, outpoint, contract.LeafExit, fee, intent.IntentMessageTypeRegister,
 	)
 
-	intentID, err := p.arkd.RegisterIntent(
-		ctx, signIntent(t, proof, short, long, p.privKey), message,
+	intentID, err := p.Arkd().RegisterIntent(
+		ctx, signIntent(t, proof, short, long, p.PrivateKey()), message,
 	)
 	if err != nil {
 		t.Fatalf("arkd refused the renewal intent: %v", err)
@@ -384,7 +385,7 @@ func contractVtxo(
 
 	var found wire.OutPoint
 	waitFor(t, 60*time.Second, "the renewed contract VTXO to appear", func() error {
-		resp, err := p.indexer.GetVtxos(t.Context(), opts)
+		resp, err := p.Indexer().GetVtxos(t.Context(), opts)
 		if err != nil {
 			return err
 		}
@@ -398,7 +399,7 @@ func contractVtxo(
 					v.Amount, c.Terms.PayoutSats)
 			}
 
-			hash, err := chainhashFrom(v.Txid)
+			hash, err := arkade.ChainHash(v.Txid)
 			if err != nil {
 				return err
 			}
@@ -433,7 +434,7 @@ func forgetRenewal(
 
 	proof := buildIntent(t, message, []intentCoin{contractCoin(t, c, outpoint, leaf)}, nil)
 
-	if err := p.arkd.DeleteIntent(t.Context(), signIntent(t, proof, signers...), message); err != nil {
+	if err := p.Arkd().DeleteIntent(t.Context(), signIntent(t, proof, signers...), message); err != nil {
 		t.Errorf("could not withdraw the intent, the stack is left dirty: %v", err)
 	}
 }
@@ -510,7 +511,7 @@ func TestRenewalCannotBePaidOutOfTheContract(t *testing.T) {
 		[]*wire.TxOut{{Value: c.Terms.PayoutSats - fee, PkScript: mustPkScript(t, c)}},
 	)
 
-	intentID, err := p.arkd.RegisterIntent(
+	intentID, err := p.Arkd().RegisterIntent(
 		t.Context(), signIntent(t, shrunk, shortKey, longKey),
 		intentMessage(t, intent.IntentMessageTypeRegister),
 	)
@@ -641,10 +642,10 @@ func TestARenewedContractStillRedeemsMutually(t *testing.T) {
 
 			lopsided := []*wire.TxOut{
 				{
-					Value:    c.Terms.PayoutSats - int64(stack.dust),
+					Value:    c.Terms.PayoutSats - int64(stack.Dust),
 					PkScript: c.Terms.ShortLockScript,
 				},
-				{Value: int64(stack.dust), PkScript: c.Terms.LongLockScript},
+				{Value: int64(stack.Dust), PkScript: c.Terms.LongLockScript},
 			}
 
 			if err := redeem(t, p, c, outpoint, lopsided, shortKey, longKey); err != nil {
@@ -717,7 +718,7 @@ func exitAfterRenewals(t *testing.T, rounds int) {
 	})
 
 	refuses(t, signed, reasonTooEarly)
-	mine(t, int(stack.exitDelay.Value)+1)
+	mine(t, int(stack.ExitDelay.Value)+1)
 
 	waitFor(t, 60*time.Second, "the chain to accept the matured exit", func() error {
 		return broadcast(t, e, signed)

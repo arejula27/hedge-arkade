@@ -57,7 +57,7 @@ func exitTo(
 		t.Fatalf("Finalize: %v", err)
 	}
 
-	mine(t, int(stack.exitDelay.Value)+1)
+	mine(t, int(stack.ExitDelay.Value)+1)
 	waitFor(t, 60*time.Second, "the chain to accept the exit", func() error {
 		return broadcast(t, e, signed)
 	})
@@ -197,8 +197,8 @@ func TestTheServiceCannotArbitrateAlone(t *testing.T) {
 	// only ever produce one signature.
 	stolen := proposal.Tx.Copy()
 	stolen.TxOut[0].PkScript = p2tr(parties.service.PubKey())
-	stolen.TxOut[0].Value = available - arbitrationFeeSats - int64(stack.dust)
-	stolen.TxOut[1].Value = int64(stack.dust)
+	stolen.TxOut[0].Value = available - arbitrationFeeSats - int64(stack.Dust)
+	stolen.TxOut[1].Value = int64(stack.Dust)
 
 	theft := &contract.Arbitration{
 		Tx: stolen, ShortSats: stolen.TxOut[0].Value, LongSats: stolen.TxOut[1].Value,

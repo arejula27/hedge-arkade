@@ -3,19 +3,14 @@
 package integration
 
 import (
-	"bytes"
-	"encoding/hex"
 	"testing"
 
+	"github.com/arejula27/hedge/arkade"
 	"github.com/arejula27/hedge/contract"
-	"github.com/arkade-os/arkd/pkg/ark-lib/extension"
 	"github.com/arkade-os/arkd/pkg/ark-lib/offchain"
-	"github.com/arkade-os/arkd/pkg/ark-lib/txutils"
-	"github.com/arkade-os/emulator/pkg/arkade"
+	emulatorvm "github.com/arkade-os/emulator/pkg/arkade"
 	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcwallet/waddrmgr"
 )
 
 // The settlement the standard terms produce at an unchanged price: each side
@@ -112,9 +107,9 @@ func fundContract(t *testing.T, p *party, c contract.Contract) wire.OutPoint {
 	input, changePkScript := p.spendableVtxo(t)
 
 	change := input.Amount - c.Terms.PayoutSats
-	if change <= int64(stack.dust) {
+	if change <= int64(stack.Dust) {
 		t.Fatalf("boarded %d sats: not enough to fund %d and leave change above dust %d",
-			input.Amount, c.Terms.PayoutSats, stack.dust)
+			input.Amount, c.Terms.PayoutSats, stack.Dust)
 	}
 
 	arkTx, checkpoints, err := offchain.BuildTxs(
@@ -134,7 +129,7 @@ func fundContract(t *testing.T, p *party, c contract.Contract) wire.OutPoint {
 		t.Fatalf("arkd refused the funding transaction: %v", err)
 	}
 
-	hash, err := chainhashFrom(txid)
+	hash, err := arkade.ChainHash(txid)
 	if err != nil {
 		t.Fatalf("funding txid %q: %v", txid, err)
 	}
@@ -160,26 +155,14 @@ func settlementPaying(
 ) (*psbt.Packet, []*psbt.Packet) {
 	t.Helper()
 
-	input := contractInput(t, c, outpoint, c.Terms.PayoutSats)
+	requireCheckpointTapscript(t)
 
-	arkTx, checkpoints, err := offchain.BuildTxs(
-		[]offchain.VtxoInput{input}, outputs, checkpointTapscript(t),
+	arkTx, checkpoints, err := arkade.BuildSettlementPaying(
+		stack, c, outpoint, outputs, settlementWitness(t, settlementPrice),
 	)
 	if err != nil {
 		t.Fatalf("building the settlement transaction: %v", err)
 	}
-
-	settlementScript, err := c.SettlementScript()
-	if err != nil {
-		t.Fatalf("SettlementScript: %v", err)
-	}
-
-	addEmulatorPacket(t, arkTx, arkade.EmulatorEntry{
-		Vin:     0,
-		Script:  settlementScript,
-		Witness: settlementWitness(t, settlementPrice),
-	})
-
 	return arkTx, checkpoints
 }
 
@@ -189,34 +172,11 @@ func contractInput(
 ) offchain.VtxoInput {
 	t.Helper()
 
-	proof, err := c.Tapscript(contract.LeafSettlement)
+	input, err := arkade.ContractInput(c, contract.LeafSettlement, outpoint, amount)
 	if err != nil {
-		t.Fatalf("Tapscript: %v", err)
+		t.Fatal(err)
 	}
-
-	control, err := txscript.ParseControlBlock(proof.ControlBlock)
-	if err != nil {
-		t.Fatalf("ParseControlBlock: %v", err)
-	}
-
-	vtxo, err := c.VtxoScript()
-	if err != nil {
-		t.Fatalf("VtxoScript: %v", err)
-	}
-	revealed, err := vtxo.Encode()
-	if err != nil {
-		t.Fatalf("Encode: %v", err)
-	}
-
-	return offchain.VtxoInput{
-		Outpoint: &outpoint,
-		Tapscript: &waddrmgr.Tapscript{
-			ControlBlock:   control,
-			RevealedScript: proof.Script,
-		},
-		Amount:             amount,
-		RevealedTapscripts: revealed,
-	}
+	return input
 }
 
 // checkpointTapscript is the operator's, read from its GetInfo rather than
@@ -224,53 +184,24 @@ func contractInput(
 func checkpointTapscript(t *testing.T) []byte {
 	t.Helper()
 
-	if stack.checkpointTapscript == "" {
+	requireCheckpointTapscript(t)
+	return stack.CheckpointTapscript
+}
+
+func requireCheckpointTapscript(t *testing.T) {
+	t.Helper()
+
+	if len(stack.CheckpointTapscript) == 0 {
 		t.Skip("the operator reports no checkpoint tapscript")
 	}
-
-	raw, err := hex.DecodeString(stack.checkpointTapscript)
-	if err != nil {
-		t.Fatalf("decoding the checkpoint tapscript: %v", err)
-	}
-	return raw
 }
 
 // addEmulatorPacket inserts the extension OP_RETURN before the P2A anchor, so
 // the payout output indices the covenant inspects do not shift.
-func addEmulatorPacket(t *testing.T, ptx *psbt.Packet, entries ...arkade.EmulatorEntry) {
+func addEmulatorPacket(t *testing.T, ptx *psbt.Packet, entries ...emulatorvm.EmulatorEntry) {
 	t.Helper()
 
-	packet, err := arkade.NewPacket(entries...)
-	if err != nil {
-		t.Fatalf("building the emulator packet: %v", err)
+	if err := arkade.AddEmulatorPacket(ptx, entries...); err != nil {
+		t.Fatal(err)
 	}
-
-	txOut, err := extension.Extension{packet}.TxOut()
-	if err != nil {
-		t.Fatalf("encoding the extension output: %v", err)
-	}
-
-	last := len(ptx.UnsignedTx.TxOut) - 1
-	if last >= 0 && bytes.Equal(ptx.UnsignedTx.TxOut[last].PkScript, txutils.ANCHOR_PKSCRIPT) {
-		anchor := ptx.UnsignedTx.TxOut[last]
-		ptx.UnsignedTx.TxOut[last] = txOut
-		ptx.UnsignedTx.AddTxOut(anchor)
-	} else {
-		ptx.UnsignedTx.AddTxOut(txOut)
-	}
-	ptx.Outputs = append(ptx.Outputs, psbt.POutput{})
-}
-
-func encode(t *testing.T, packets []*psbt.Packet) []string {
-	t.Helper()
-
-	encoded := make([]string, 0, len(packets))
-	for _, p := range packets {
-		b64, err := p.B64Encode()
-		if err != nil {
-			t.Fatalf("encoding a checkpoint: %v", err)
-		}
-		encoded = append(encoded, b64)
-	}
-	return encoded
 }

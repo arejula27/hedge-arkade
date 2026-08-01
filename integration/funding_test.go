@@ -3,14 +3,13 @@
 package integration
 
 import (
-	"fmt"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/arejula27/hedge/arkade"
 	"github.com/arejula27/hedge/contract"
 	"github.com/arkade-os/arkd/pkg/ark-lib/offchain"
-	"github.com/arkade-os/emulator/pkg/arkade"
+	emulatorvm "github.com/arkade-os/emulator/pkg/arkade"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
 )
@@ -30,28 +29,22 @@ func signEveryone(
 	t *testing.T, parties []*party, arkTx *psbt.Packet, checkpoints []*psbt.Packet,
 ) (string, []string) {
 	t.Helper()
-	ctx := t.Context()
 
-	signedArkTx, err := arkTx.B64Encode()
+	signedArkTx, signedCheckpoints, err := arkade.SignEveryone(
+		t.Context(), arkTx, checkpoints, signersOf(parties),
+	)
 	if err != nil {
-		t.Fatalf("encoding the transaction: %v", err)
+		t.Fatal(err)
 	}
-	signedCheckpoints := encode(t, checkpoints)
-
-	for _, p := range parties {
-		signedArkTx, err = p.wallet.SignTransaction(ctx, p.explorer, signedArkTx)
-		if err != nil {
-			t.Fatalf("signing the transaction: %v", err)
-		}
-		for i, checkpoint := range signedCheckpoints {
-			signedCheckpoints[i], err = p.wallet.SignTransaction(ctx, p.explorer, checkpoint)
-			if err != nil {
-				t.Fatalf("signing a checkpoint: %v", err)
-			}
-		}
-	}
-
 	return signedArkTx, signedCheckpoints
+}
+
+func signersOf(parties []*party) []arkade.Signer {
+	signers := make([]arkade.Signer, 0, len(parties))
+	for _, p := range parties {
+		signers = append(signers, p.Signer())
+	}
+	return signers
 }
 
 // fundContractBilaterally builds one transaction with an input from each party
@@ -64,91 +57,25 @@ func fundContractBilaterally(
 	t *testing.T, short, long *party, c contract.Contract, shortStake, longStake int64,
 ) wire.OutPoint {
 	t.Helper()
-	ctx := t.Context()
 
-	if shortStake+longStake != c.Terms.PayoutSats {
-		t.Fatalf("stakes %d + %d do not add up to the contract's %d",
-			shortStake, longStake, c.Terms.PayoutSats)
-	}
+	requireCheckpointTapscript(t)
 
-	contractPkScript, err := c.PkScript()
-	if err != nil {
-		t.Fatalf("PkScript: %v", err)
-	}
-
-	shortInput, shortChangeScript := short.spendableVtxo(t)
-	longInput, longChangeScript := long.spendableVtxo(t)
-
-	outputs := []*wire.TxOut{{Value: c.Terms.PayoutSats, PkScript: contractPkScript}}
-	for _, change := range []struct {
-		amount   int64
-		pkScript []byte
-	}{
-		{shortInput.Amount - shortStake, shortChangeScript},
-		{longInput.Amount - longStake, longChangeScript},
-	} {
-		if change.amount <= int64(stack.dust) {
-			t.Fatalf("change of %d is not above the operator's dust %d",
-				change.amount, stack.dust)
-		}
-		outputs = append(outputs, &wire.TxOut{
-			Value: change.amount, PkScript: change.pkScript,
-		})
-	}
-
-	arkTx, checkpoints, err := offchain.BuildTxs(
-		[]offchain.VtxoInput{shortInput, longInput}, outputs, checkpointTapscript(t),
+	outpoint, err := arkade.FundBilaterally(t.Context(), stack, c,
+		arkade.Stake{Wallet: short.Wallet, Sats: shortStake},
+		arkade.Stake{Wallet: long.Wallet, Sats: longStake},
 	)
 	if err != nil {
-		t.Fatalf("building the funding transaction: %v", err)
+		t.Fatal(err)
 	}
-
-	parties := []*party{short, long}
-	signedArkTx, signedCheckpoints := signEveryone(t, parties, arkTx, checkpoints)
-
-	txid, _, returned, err := short.arkd.SubmitTx(ctx, signedArkTx, signedCheckpoints)
-	if err != nil {
-		t.Fatalf("arkd refused the bilateral funding transaction: %v", err)
-	}
-
-	final := make([]string, len(returned))
-	copy(final, returned)
-	for _, p := range parties {
-		for i, checkpoint := range final {
-			final[i], err = p.wallet.SignTransaction(ctx, p.explorer, checkpoint)
-			if err != nil {
-				t.Fatalf("signing a returned checkpoint: %v", err)
-			}
-		}
-	}
-	if err := short.arkd.FinalizeTx(ctx, txid, final); err != nil {
-		t.Fatalf("arkd refused to finalize the bilateral funding: %v", err)
-	}
-
-	waitForVtxo(t, short, txid)
-
-	hash, err := chainhashFrom(txid)
-	if err != nil {
-		t.Fatalf("funding txid %q: %v", txid, err)
-	}
-	return wire.OutPoint{Hash: *hash, Index: 0}
+	return outpoint
 }
 
 func waitForVtxo(t *testing.T, p *party, txid string) {
 	t.Helper()
 
-	waitFor(t, 30*time.Second, "the contract VTXO to be registered", func() error {
-		spendable, _, err := p.sdk.ListVtxos(t.Context())
-		if err != nil {
-			return err
-		}
-		for _, v := range spendable {
-			if v.Txid == txid {
-				return nil
-			}
-		}
-		return fmt.Errorf("tx %s not registered yet", txid)
-	})
+	if err := arkade.WaitForVtxo(t.Context(), p.Wallet, txid); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // Two parties, two VTXOs, one contract — and then it settles. At the opening
@@ -208,7 +135,7 @@ func TestTheStackRefusesAnOverfundedContract(t *testing.T) {
 	signedArkTx, signedCheckpoints := signEveryone(t, parties, arkTx, checkpoints)
 
 	ctx := t.Context()
-	txid, _, returned, err := short.arkd.SubmitTx(ctx, signedArkTx, signedCheckpoints)
+	txid, _, returned, err := short.Arkd().SubmitTx(ctx, signedArkTx, signedCheckpoints)
 	if err != nil {
 		t.Skipf("arkd refused the overfunded VTXO outright: %v", err)
 	}
@@ -217,18 +144,18 @@ func TestTheStackRefusesAnOverfundedContract(t *testing.T) {
 	copy(final, returned)
 	for _, p := range parties {
 		for i, checkpoint := range final {
-			final[i], err = p.wallet.SignTransaction(ctx, p.explorer, checkpoint)
+			final[i], err = p.SignPacket(ctx, checkpoint)
 			if err != nil {
 				t.Fatalf("signing a returned checkpoint: %v", err)
 			}
 		}
 	}
-	if err := short.arkd.FinalizeTx(ctx, txid, final); err != nil {
+	if err := short.Arkd().FinalizeTx(ctx, txid, final); err != nil {
 		t.Skipf("arkd refused to finalize the overfunded VTXO: %v", err)
 	}
 	waitForVtxo(t, short, txid)
 
-	hash, err := chainhashFrom(txid)
+	hash, err := arkade.ChainHash(txid)
 	if err != nil {
 		t.Fatalf("funding txid %q: %v", txid, err)
 	}
@@ -261,7 +188,7 @@ func TestTheStackRefusesAnOverfundedContract(t *testing.T) {
 			if err != nil {
 				t.Fatalf("SettlementScript: %v", err)
 			}
-			addEmulatorPacket(t, arkTx, arkade.EmulatorEntry{
+			addEmulatorPacket(t, arkTx, emulatorvm.EmulatorEntry{
 				Vin:     0,
 				Script:  settlementScript,
 				Witness: settlementWitness(t, settlementPrice),

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/arejula27/hedge/arkade"
 	"github.com/arejula27/hedge/contract"
-	arklib "github.com/arkade-os/arkd/pkg/ark-lib"
 	"github.com/arkade-os/go-sdk/explorer"
 	mempoolexplorer "github.com/arkade-os/go-sdk/explorer/mempool"
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -84,7 +84,7 @@ const (
 func onchain(t *testing.T) explorer.Explorer {
 	t.Helper()
 
-	e, err := mempoolexplorer.NewExplorer(ExplorerURL, arklib.BitcoinRegTest)
+	e, err := mempoolexplorer.NewExplorer(stackConfig.ExplorerURL, stackConfig.Network)
 	if err != nil {
 		t.Fatalf("explorer: %v", err)
 	}
@@ -112,9 +112,8 @@ func taprootAddress(t *testing.T, key *btcec.PublicKey) string {
 func fundOnchain(t *testing.T, e explorer.Explorer, address string, sats int64) explorer.Utxo {
 	t.Helper()
 
-	amount := strings.TrimSuffix(btcutil.Amount(sats).Format(btcutil.AmountBTC), " BTC")
-	if out, err := faucet(address, amount); err != nil {
-		t.Fatalf("faucet %s %s: %v\n%s", address, amount, err, out)
+	if err := regtestChain.Faucet(t.Context(), address, sats); err != nil {
+		t.Fatal(err)
 	}
 
 	var found explorer.Utxo
@@ -158,7 +157,7 @@ func rawHex(t *testing.T, tx *wire.MsgTx) string {
 func refuses(t *testing.T, tx *wire.MsgTx, because string) {
 	t.Helper()
 
-	out, err := regtest("testaccept", rawHex(t, tx))
+	out, err := regtestChain.TestAccept(t.Context(), rawHex(t, tx))
 	if err != nil {
 		t.Fatalf("testmempoolaccept: %v\n%s", err, out)
 	}
@@ -200,8 +199,8 @@ const (
 // here. The regtest stacks configure blocks precisely so it is.
 func requireBlockDelay(t *testing.T) {
 	t.Helper()
-	if !stack.allowsBlockTimelocks() {
-		t.Skipf("the operator's exit delay is %+v; mining cannot clear it", stack.exitDelay)
+	if !stack.AllowsBlockTimelocks() {
+		t.Skipf("the operator's exit delay is %+v; mining cannot clear it", stack.ExitDelay)
 	}
 }
 
@@ -248,7 +247,7 @@ func TestTheChainAcceptsTheUnilateralExit(t *testing.T) {
 	// timelock were missing entirely.
 	refuses(t, signed, reasonTooEarly)
 
-	mine(t, int(stack.exitDelay.Value)+1)
+	mine(t, int(stack.ExitDelay.Value)+1)
 
 	waitFor(t, 60*time.Second, "the chain to accept the matured exit", func() error {
 		return broadcast(t, e, signed)
@@ -320,7 +319,7 @@ func TestTheChainRefusesARewrittenExit(t *testing.T) {
 		t.Fatalf("Finalize: %v", err)
 	}
 
-	mine(t, int(stack.exitDelay.Value)+1)
+	mine(t, int(stack.ExitDelay.Value)+1)
 
 	for _, tc := range []struct {
 		name   string
@@ -370,7 +369,7 @@ func sweepKey(t *testing.T, s *contract.Sweep) *btcec.PublicKey {
 }
 
 func outpointOf(u explorer.Utxo) (*wire.OutPoint, error) {
-	hash, err := chainhashFrom(u.Txid)
+	hash, err := arkade.ChainHash(u.Txid)
 	if err != nil {
 		return nil, err
 	}

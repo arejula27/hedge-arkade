@@ -19,7 +19,7 @@ The service never custodies funds.
 ```sh
 just                    # list recipes
 just check              # fmt, vet, tests — no Docker, no network
-just regtest-up         # start arkd + emulator on regtest (needs Docker)
+just regtest-reset      # start arkd + emulator on a clean regtest chain (needs Docker)
 just test-integration   # the covenant against the live stack
 ```
 
@@ -31,13 +31,16 @@ Go 1.26.5 — the version `pkg/arkade` requires — plus Node 22 and `just`.
 | Path | What |
 |---|---|
 | `contract/` | The contract. Builds the Arkade Script and runs it against the VM |
+| `arkade/` | The live-stack client: wallets, funding, submitting to arkd and the emulator |
 | `integration/` | The same contract against a live arkd and emulator |
 | `service/` | The web service: Go + echo + postgres, and a Vite/React frontend |
 | `doc/` | Design notes |
 
-Three Go modules, on purpose. `contract/` has seven direct dependencies and is what the client
+Four Go modules, on purpose. `contract/` has seven direct dependencies and is what the client
 verifier is pinned to, so the go-sdk, the emulator client and the service's own dependencies stay
-out of it. The other two depend on it through a `replace`.
+out of it. `arkade/` is where those live instead, and both the service and the integration tests
+depend on it — so the tests exercise the code that runs in production rather than a parallel copy
+of it. Everything depends on `contract/` through a `replace`.
 
 ```sh
 just db-up              # postgres for the service (needs Docker)

@@ -93,7 +93,7 @@ func redeem(
 
 	signedArkTx, signedCheckpoints := p.sign(t, arkTx, checkpoints)
 
-	txid, _, returned, err := p.arkd.SubmitTx(ctx, signedArkTx, signedCheckpoints)
+	txid, _, returned, err := p.Arkd().SubmitTx(ctx, signedArkTx, signedCheckpoints)
 	if err != nil {
 		return err
 	}
@@ -114,7 +114,7 @@ func redeem(
 		}
 		final = append(final, encoded)
 	}
-	return p.arkd.FinalizeTx(ctx, txid, final)
+	return p.Arkd().FinalizeTx(ctx, txid, final)
 }
 
 // The split on this leaf is whatever the two of them say it is — that is the
@@ -128,8 +128,8 @@ func TestTheStackRedeemsTheContractMutually(t *testing.T) {
 	outpoint := fundContract(t, p, c)
 
 	lopsided := []*wire.TxOut{
-		{Value: c.Terms.PayoutSats - int64(stack.dust), PkScript: c.Terms.ShortLockScript},
-		{Value: int64(stack.dust), PkScript: c.Terms.LongLockScript},
+		{Value: c.Terms.PayoutSats - int64(stack.Dust), PkScript: c.Terms.ShortLockScript},
+		{Value: int64(stack.Dust), PkScript: c.Terms.LongLockScript},
 	}
 
 	if err := redeem(t, p, c, outpoint, lopsided, shortKey, longKey); err != nil {
@@ -225,7 +225,7 @@ func submitRedemption(
 
 	signedArkTx, signedCheckpoints := p.sign(t, r.ArkTx, r.Checkpoints)
 
-	txid, _, returned, err := p.arkd.SubmitTx(ctx, signedArkTx, signedCheckpoints)
+	txid, _, returned, err := p.Arkd().SubmitTx(ctx, signedArkTx, signedCheckpoints)
 	if err != nil {
 		return err
 	}
@@ -242,5 +242,5 @@ func submitRedemption(
 		}
 		final = append(final, encoded)
 	}
-	return p.arkd.FinalizeTx(ctx, txid, final)
+	return p.Arkd().FinalizeTx(ctx, txid, final)
 }

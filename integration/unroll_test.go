@@ -34,7 +34,7 @@ import (
 func unroll(t *testing.T, p *party, outpoint wire.OutPoint) int {
 	t.Helper()
 
-	branch, err := redemption.NewRedeemBranch(t.Context(), p.explorer, p.indexer, types.Vtxo{
+	branch, err := redemption.NewRedeemBranch(t.Context(), p.Explorer(), p.Indexer(), types.Vtxo{
 		Outpoint: types.Outpoint{Txid: outpoint.Hash.String(), VOut: outpoint.Index},
 	})
 	if err != nil {
@@ -67,8 +67,8 @@ func unroll(t *testing.T, p *party, outpoint wire.OutPoint) int {
 			t.Fatalf("next transaction to unroll: %v", err)
 		}
 
-		if out, err := regtest("minetx", next); err != nil {
-			t.Fatalf("mining an unroll transaction: %v\n%s", err, out)
+		if err := regtestChain.MineTx(t.Context(), next); err != nil {
+			t.Fatalf("mining an unroll transaction: %v", err)
 		}
 		published++
 	}
@@ -120,7 +120,7 @@ func TestAPartyCanUnrollAndExitWithoutTheOperator(t *testing.T) {
 	// The CSV runs from the confirmation of the transaction that put the
 	// contract output on the chain, so it starts now, not at funding.
 	refuses(t, signed, reasonTooEarly)
-	mine(t, int(stack.exitDelay.Value)+1)
+	mine(t, int(stack.ExitDelay.Value)+1)
 
 	waitFor(t, 60*time.Second, "the chain to accept the matured exit", func() error {
 		return broadcast(t, e, signed)

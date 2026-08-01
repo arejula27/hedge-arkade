@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/arejula27/hedge/arkade"
 	"github.com/arejula27/hedge/contract"
 	arklib "github.com/arkade-os/arkd/pkg/ark-lib"
 	arkscript "github.com/arkade-os/arkd/pkg/ark-lib/script"
@@ -98,7 +99,7 @@ func feeForfeit(t *testing.T, p *party, coin intentCoin) forfeitable {
 		amount:     coin.input.WitnessUtxo.Value,
 		pkScript:   coin.input.WitnessUtxo.PkScript,
 		leaf:       coin.leaf,
-		signedWith: []*btcec.PrivateKey{p.privKey},
+		signedWith: []*btcec.PrivateKey{p.PrivateKey()},
 	}
 }
 
@@ -113,7 +114,7 @@ func (s *renewalSession) joinBatch(ctx context.Context) (string, error) {
 	}
 	topics = append(topics, s.signer.GetPublicKey())
 
-	events, closeStream, err := s.party.arkd.GetEventStream(ctx, topics)
+	events, closeStream, err := s.party.Arkd().GetEventStream(ctx, topics)
 	if err != nil {
 		return "", fmt.Errorf("event stream: %w", err)
 	}
@@ -135,11 +136,11 @@ func (s *renewalSession) OnBatchStarted(
 		if hash != wanted {
 			continue
 		}
-		if err := s.party.arkd.ConfirmRegistration(ctx, s.intentID); err != nil {
+		if err := s.party.Arkd().ConfirmRegistration(ctx, s.intentID); err != nil {
 			return false, fmt.Errorf("confirming registration: %w", err)
 		}
 		s.sessionID = event.Id
-		s.expiry = locktime(event.BatchExpiry)
+		s.expiry = arkade.Locktime(event.BatchExpiry)
 		return false, nil
 	}
 
@@ -162,7 +163,7 @@ func (s *renewalSession) OnTreeSigningStarted(
 
 	sweep := arkscript.CSVMultisigClosure{
 		MultisigClosure: arkscript.MultisigClosure{
-			PubKeys: []*btcec.PublicKey{stack.forfeitPubKey},
+			PubKeys: []*btcec.PublicKey{stack.ForfeitPubKey},
 		},
 		Locktime: s.expiry,
 	}
@@ -191,7 +192,7 @@ func (s *renewalSession) OnTreeSigningStarted(
 		return false, fmt.Errorf("nonces: %w", err)
 	}
 
-	return false, s.party.arkd.SubmitTreeNonces(ctx, event.Id, mine, nonces)
+	return false, s.party.Arkd().SubmitTreeNonces(ctx, event.Id, mine, nonces)
 }
 
 // OnTreeNonces signs once the operator has aggregated everyone's nonces for a
@@ -211,7 +212,7 @@ func (s *renewalSession) OnTreeNonces(
 	if err != nil {
 		return false, fmt.Errorf("signing the tree: %w", err)
 	}
-	if err := s.party.arkd.SubmitTreeSignatures(
+	if err := s.party.Arkd().SubmitTreeSignatures(
 		ctx, event.Id, s.signer.GetPublicKey(), sigs,
 	); err != nil {
 		return false, fmt.Errorf("submitting tree signatures: %w", err)
@@ -240,7 +241,7 @@ func (s *renewalSession) OnBatchFinalization(
 		forfeits = append(forfeits, s.forfeit(coin, leaves[i]))
 	}
 
-	return s.party.arkd.SubmitSignedForfeitTxs(ctx, forfeits, "")
+	return s.party.Arkd().SubmitSignedForfeitTxs(ctx, forfeits, "")
 }
 
 // forfeit builds and signs the transaction that pays one coin to the operator's
@@ -304,7 +305,7 @@ func connectorOutput(t *testing.T, connectorTx *psbt.Packet) (*wire.TxOut, *wire
 func forfeitPkScript(t *testing.T) []byte {
 	t.Helper()
 
-	address, err := btcutil.DecodeAddress(stack.forfeitAddress, nil)
+	address, err := btcutil.DecodeAddress(stack.ForfeitAddress, nil)
 	if err != nil {
 		t.Fatalf("decoding the forfeit address: %v", err)
 	}

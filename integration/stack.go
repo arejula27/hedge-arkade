@@ -1,72 +1,19 @@
-// Package integration runs the covenant against a live Arkade stack: real
+// Package integration runs the contract against a live Arkade stack: real
 // arkd, real arkd-wallet, real emulator, real bitcoind on regtest.
 //
-// It is a separate Go module on purpose. `covenant` has three direct
+// It is a separate Go module on purpose. `contract` has seven direct
 // dependencies and is what the TypeScript verifier is pinned to; the client
-// SDK, the explorer and the emulator client belong nowhere near it.
+// SDK, the explorer and the emulator client belong nowhere near it. What talks
+// to those services lives in `arkade`, which the web service uses too — so
+// these tests exercise the code that runs in production rather than a parallel
+// copy of it.
 //
-// Everything here is behind the `integration` build tag, so `just test` never
-// reaches it and a machine without Docker is unaffected.
+// Everything else here is behind the `integration` build tag, so `just test`
+// never reaches it and a machine without Docker is unaffected.
 package integration
 
-import (
-	"context"
-	"fmt"
-	"net"
-	"os"
-	"time"
-)
+import "github.com/arejula27/hedge/arkade"
 
-// Endpoints the regtest stack exposes. arkade-regtest publishes these on
-// localhost; override any of them for a stack that does not.
-//
-// The explorer URL has to include /api. Port 3000 serves the mempool web UI at
-// the root and the Esplora REST API underneath, so pointing at the root gets
-// HTML and the SDK fails with "invalid character '<'".
-var (
-	ArkdURL     = env("HEDGE_ARKD_URL", "localhost:7070")
-	EmulatorURL = env("HEDGE_EMULATOR_URL", "localhost:7073")
-	ExplorerURL = env("HEDGE_EXPLORER_URL", "http://localhost:3000/api")
-)
-
-func env(name, fallback string) string {
-	if v := os.Getenv(name); v != "" {
-		return v
-	}
-	return fallback
-}
-
-// WaitForStack blocks until every service accepts a TCP connection, or the
-// context expires. Starting the stack and running the tests are separate steps,
-// and arkd is not ready the moment its port opens on the way up.
-func WaitForStack(ctx context.Context) error {
-	for _, target := range []struct{ name, addr string }{
-		{"arkd", ArkdURL},
-		{"emulator", EmulatorURL},
-	} {
-		if err := waitForPort(ctx, target.name, target.addr); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func waitForPort(ctx context.Context, name, addr string) error {
-	var last error
-	for {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("%s at %s never came up: %w (last dial: %v)",
-				name, addr, ctx.Err(), last)
-		default:
-		}
-
-		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
-		if err == nil {
-			_ = conn.Close()
-			return nil
-		}
-		last = err
-		time.Sleep(time.Second)
-	}
-}
+// stackConfig points at the regtest stack. arkade-regtest publishes the
+// endpoints on localhost; the HEDGE_* variables override them.
+var stackConfig = arkade.DefaultConfig()

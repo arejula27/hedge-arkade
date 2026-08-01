@@ -1,4 +1,4 @@
-module github.com/arejula27/hedge/integration
+module github.com/arejula27/hedge/arkade
 
 go 1.26.5
 
@@ -6,17 +6,15 @@ require (
 	github.com/arejula27/hedge/contract v0.0.0
 	github.com/arkade-os/arkd/pkg/ark-lib v0.8.1-0.20260318170839-137daaec3a70
 	github.com/arkade-os/emulator/pkg/arkade v0.0.0-20260728084232-b2c7d853d267
+	github.com/arkade-os/emulator/pkg/client v0.0.0-20260728084232-b2c7d853d267
 	github.com/arkade-os/go-sdk v0.8.2-0.20260303154656-f29d9e77d5c7
 	github.com/btcsuite/btcd v0.24.3-0.20240921052913-67b8efd3ba53
 	github.com/btcsuite/btcd/btcec/v2 v2.3.5
 	github.com/btcsuite/btcd/btcutil v1.1.5
 	github.com/btcsuite/btcd/btcutil/psbt v1.1.9
+	github.com/btcsuite/btcd/chaincfg/chainhash v1.2.0
 	github.com/btcsuite/btcwallet v0.16.10-0.20240718224643-db3a4a2543bd
-)
-
-require (
-	github.com/arkade-os/emulator/pkg/client v0.0.0-20260728084232-b2c7d853d267 // indirect
-	google.golang.org/grpc v1.79.3 // indirect
+	google.golang.org/grpc v1.79.3
 )
 
 require (
@@ -25,11 +23,9 @@ require (
 	github.com/FactomProject/btcutilecc v0.0.0-20130527213604-d3a63a5752ec // indirect
 	github.com/aead/siphash v1.0.1 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.0 // indirect
-	github.com/arejula27/hedge/arkade v0.0.0
 	github.com/arkade-os/arkd/pkg/errors v0.0.0-20260303153651-8615412e4dea // indirect
 	github.com/arkade-os/emulator/api-spec v0.0.0-20260728084232-b2c7d853d267 // indirect
 	github.com/bits-and-blooms/bitset v1.20.0 // indirect
-	github.com/btcsuite/btcd/chaincfg/chainhash v1.2.0 // indirect
 	github.com/btcsuite/btclog v0.0.0-20170628155309-84c8d2346e9f // indirect
 	github.com/btcsuite/btcwallet/wallet/txauthor v1.3.4 // indirect
 	github.com/btcsuite/btcwallet/wallet/txrules v1.2.1 // indirect
@@ -69,6 +65,7 @@ require (
 	github.com/lightningnetwork/lnd/queue v1.1.1 // indirect
 	github.com/lightningnetwork/lnd/ticker v1.1.1 // indirect
 	github.com/lightningnetwork/lnd/tlv v1.2.6 // indirect
+	github.com/ltcsuite/ltcd/chaincfg/chainhash v1.0.2 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/meshapi/grpc-api-gateway v0.1.0 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
@@ -109,5 +106,3 @@ require (
 replace github.com/arejula27/hedge/contract => ../contract
 
 replace github.com/btcsuite/btcd/btcec/v2 => github.com/btcsuite/btcd/btcec/v2 v2.3.3
-
-replace github.com/arejula27/hedge/arkade => ../arkade

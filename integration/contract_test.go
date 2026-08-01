@@ -58,10 +58,10 @@ func liveContract(t *testing.T) contract.Contract {
 		Keys: contract.Keys{
 			Short:          shortKey.PubKey(),
 			Long:           longKey.PubKey(),
-			ArkdSigner:     stack.arkdSigner,
-			EmulatorSigner: stack.emulatorSigner,
+			ArkdSigner:     stack.ArkdSigner,
+			EmulatorSigner: stack.EmulatorSigner,
 		},
-		ExitDelay:              stack.exitDelay,
+		ExitDelay:              stack.ExitDelay,
 		EnableMutualRedemption: true,
 	}
 }
@@ -72,7 +72,7 @@ func liveContract(t *testing.T) contract.Contract {
 func TestTheRealOperatorWouldAcceptTheContract(t *testing.T) {
 	c := liveContract(t)
 
-	if err := c.Validate(stack.exitDelay, stack.allowsBlockTimelocks()); err != nil {
+	if err := c.Validate(stack.ExitDelay, stack.AllowsBlockTimelocks()); err != nil {
 		t.Fatalf("the live operator's rules reject this contract: %v", err)
 	}
 
@@ -87,14 +87,14 @@ func TestTheRealOperatorWouldAcceptTheContract(t *testing.T) {
 // undercut it. The unit test asserts this against a delay we made up; here the
 // bound is whatever the running arkd is configured with.
 func TestTheRealOperatorRejectsAShortExit(t *testing.T) {
-	if stack.exitDelay.Value <= 1 {
+	if stack.ExitDelay.Value <= 1 {
 		t.Skip("the operator's exit delay is already at the minimum")
 	}
 
 	c := liveContract(t)
-	c.ExitDelay = arklib.RelativeLocktime{Type: stack.exitDelay.Type, Value: 1}
+	c.ExitDelay = arklib.RelativeLocktime{Type: stack.ExitDelay.Type, Value: 1}
 
-	if err := c.Validate(stack.exitDelay, stack.allowsBlockTimelocks()); err == nil {
+	if err := c.Validate(stack.ExitDelay, stack.AllowsBlockTimelocks()); err == nil {
 		t.Fatal("the live operator accepted an exit delay below its own minimum")
 	}
 }
@@ -124,14 +124,14 @@ func TestTheRealArkdDecodesEveryLeaf(t *testing.T) {
 // value we cannot know offline. A contract whose liquidation pays less than
 // arkd will accept is a contract that cannot be liquidated.
 func TestBothPayoutsClearTheOperatorsDust(t *testing.T) {
-	if stack.dust == 0 {
+	if stack.Dust == 0 {
 		t.Skip("the operator reports no dust threshold")
 	}
 
-	if contract.Dust < stack.dust {
+	if contract.Dust < stack.Dust {
 		t.Errorf("the covenant's dust floor is %d, below the operator's %d — "+
 			"a liquidation would pay an output arkd rejects",
-			contract.Dust, stack.dust)
+			contract.Dust, stack.Dust)
 	}
 }
 

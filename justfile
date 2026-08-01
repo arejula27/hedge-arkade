@@ -10,14 +10,19 @@ _default:
     @just --list
 
 # Format, vet and test. No Docker, no network.
-check: fmt-check vet test test-service
+check: fmt-check vet test test-arkade test-service
 
-# Everything, including the live stack. Needs Docker.
-check-all: check regtest-up test-integration test-service-integration
+# Everything, including the live stack. Needs Docker, and starts it clean.
+check-all: check regtest-reset test-integration test-service-integration
 
 # Covenant tests against the real Arkade VM.
 test:
     @{{go}} 'cd contract && go test ./...'
+
+# The Arkade client, without a stack. Covers what is decidable offline: how a
+# delay is read, where the emulator packet lands, how signers are walked round.
+test-arkade:
+    @{{go}} 'cd arkade && go test ./...'
 
 # The service, without Docker.
 test-service:
@@ -41,19 +46,21 @@ test-cover:
 
 # Rewrite files that are not gofmt'd.
 fmt:
-    @{{go}} 'gofmt -w contract integration service'
+    @{{go}} 'gofmt -w contract arkade integration service'
 
 # Fail if anything is not gofmt'd.
 fmt-check:
-    @{{go}} 'test -z "$(gofmt -l contract integration service)" || { echo "not gofmt'"'"'d:"; gofmt -l contract integration service; exit 1; }'
+    @{{go}} 'test -z "$(gofmt -l contract arkade integration service)" || { echo "not gofmt'"'"'d:"; gofmt -l contract arkade integration service; exit 1; }'
 
 vet:
     @{{go}} 'cd contract && go vet ./...'
+    @{{go}} 'cd arkade && go vet ./...'
     @{{go}} 'cd integration && go vet -tags integration ./...'
     @{{go}} 'cd service && go vet ./... && go vet -tags integration ./...'
 
 tidy:
     @{{go}} 'cd contract && go mod tidy'
+    @{{go}} 'cd arkade && go mod tidy'
     @{{go}} 'cd integration && go mod tidy'
     @{{go}} 'cd service && go mod tidy'
 
@@ -62,9 +69,16 @@ tidy:
 # These run against a live arkd + emulator on regtest, so they need Docker.
 # `just check` never touches them.
 
-# Start the regtest stack (bitcoind, arkd, arkd-wallet, emulator).
+# Start the regtest stack (bitcoind, arkd, arkd-wallet, emulator), keeping
+# whatever chain is already there.
 regtest-up:
     @./scripts/regtest.sh up
+
+# Start it on an empty chain, keeping the clone. This is what a test run wants:
+# a stack left over from a previous run has its height wherever a timelock test
+# put it, and bitcoind comes back with no wallet loaded.
+regtest-reset:
+    @./scripts/regtest.sh reset
 
 # Stop it, keeping the data.
 regtest-down:
