@@ -26,6 +26,9 @@ jobs:
 
       - run: nix develop --command just check
 
+      - name: Build the frontend
+        run: nix develop --command just web-build
+
   # The covenant against a live arkd and emulator. This is the tier that sees
   # what an in-process VM cannot: transaction shape, the emulator packet, and
   # the tweaked key the emulator looks for in the leaf.
@@ -53,6 +56,10 @@ jobs:
 
       - name: Run the integration tests
         run: nix develop --command just test-integration
+
+      # The service's own tier: a throwaway postgres, no arkd involved.
+      - name: Run the service integration tests
+        run: nix develop --command just test-service-integration
 
       - name: Stack logs
         if: failure()

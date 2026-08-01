@@ -32,7 +32,17 @@ Go 1.26.5 — the version `pkg/arkade` requires — plus Node 22 and `just`.
 |---|---|
 | `contract/` | The contract. Builds the Arkade Script and runs it against the VM |
 | `integration/` | The same contract against a live arkd and emulator |
+| `service/` | The web service: Go + echo + postgres, and a Vite/React frontend |
 | `doc/` | Design notes |
+
+Three Go modules, on purpose. `contract/` has seven direct dependencies and is what the client
+verifier is pinned to, so the go-sdk, the emulator client and the service's own dependencies stay
+out of it. The other two depend on it through a `replace`.
+
+```sh
+just db-up              # postgres for the service (needs Docker)
+just dev                # the API on :8080 and the frontend on :5173
+```
 
 ## How it settles
 

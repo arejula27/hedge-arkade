@@ -10,14 +10,18 @@ _default:
     @just --list
 
 # Format, vet and test. No Docker, no network.
-check: fmt-check vet test
+check: fmt-check vet test test-service
 
 # Everything, including the live stack. Needs Docker.
-check-all: check regtest-up test-integration
+check-all: check regtest-up test-integration test-service-integration
 
 # Covenant tests against the real Arkade VM.
 test:
     @{{go}} 'cd contract && go test ./...'
+
+# The service, without Docker.
+test-service:
+    @{{go}} 'cd service && go test ./...'
 
 # The same, with every case named.
 test-verbose:
@@ -37,19 +41,21 @@ test-cover:
 
 # Rewrite files that are not gofmt'd.
 fmt:
-    @{{go}} 'gofmt -w contract integration'
+    @{{go}} 'gofmt -w contract integration service'
 
 # Fail if anything is not gofmt'd.
 fmt-check:
-    @{{go}} 'test -z "$(gofmt -l contract integration)" || { echo "not gofmt'"'"'d:"; gofmt -l contract integration; exit 1; }'
+    @{{go}} 'test -z "$(gofmt -l contract integration service)" || { echo "not gofmt'"'"'d:"; gofmt -l contract integration service; exit 1; }'
 
 vet:
     @{{go}} 'cd contract && go vet ./...'
     @{{go}} 'cd integration && go vet -tags integration ./...'
+    @{{go}} 'cd service && go vet ./... && go vet -tags integration ./...'
 
 tidy:
     @{{go}} 'cd contract && go mod tidy'
     @{{go}} 'cd integration && go mod tidy'
+    @{{go}} 'cd service && go mod tidy'
 
 # --- Integration -------------------------------------------------------------
 #
@@ -74,6 +80,52 @@ regtest-logs *args:
 # Run the covenant against the live stack. Fails if it is not up.
 test-integration:
     @{{go}} 'cd integration && go test -tags integration -count=1 -v ./...'
+
+# The service against a real postgres, in a throwaway container.
+test-service-integration:
+    @{{go}} 'cd service && go test -tags integration -count=1 -v ./...'
+
+# --- Service -----------------------------------------------------------------
+#
+# The web service and its frontend. The database here is the service's own and
+# has nothing to do with the regtest stack.
+
+# Create the .env files from their examples if they are not there yet.
+env:
+    @test -f service/.env || { cp service/.env.example service/.env; echo "wrote service/.env"; }
+    @test -f service/frontend/.env || { cp service/frontend/.env.example service/frontend/.env; echo "wrote service/frontend/.env"; }
+
+# Start postgres and wait for it to answer.
+db-up: env
+    @{{go}} 'docker compose --env-file service/.env -f service/docker-compose.yml up -d --wait db'
+
+# Stop it, keeping the data.
+db-down:
+    @{{go}} 'docker compose --env-file service/.env -f service/docker-compose.yml down'
+
+# Stop it and delete the volume.
+db-clean:
+    @{{go}} 'docker compose --env-file service/.env -f service/docker-compose.yml down -v'
+
+# Install the frontend's dependencies.
+web-install: env
+    @{{go}} 'npm --prefix service/frontend install --prefer-offline --no-fund'
+
+web-build: web-install
+    @{{go}} 'npm --prefix service/frontend run build'
+
+web-lint: web-install
+    @{{go}} 'npm --prefix service/frontend run lint'
+
+# The API alone, on $PORT.
+run: env
+    @{{go}} 'cd service && go run ./cmd/api'
+
+# The API and the Vite dev server together. Ctrl-C stops both.
+dev: db-up web-install
+    @{{go}} 'trap "kill 0" EXIT INT TERM; \
+             (cd service && go run ./cmd/api) & \
+             npm --prefix service/frontend run dev'
 
 # Print the settlement script hex the TypeScript verifier must match.
 script-hex:
