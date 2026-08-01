@@ -43,9 +43,14 @@ depend on it — so the tests exercise the code that runs in production rather t
 of it. Everything depends on `contract/` through a `replace`.
 
 ```sh
-just db-up              # postgres for the service (needs Docker)
-just dev                # the API on :8080 and the frontend on :5173
+AUTOMINE_INTERVAL=10 just regtest-reset   # arkd and the emulator, on an empty chain
+just migrate                              # postgres, and the schema
+just oracle                               # signed prices, in its own terminal
+just dev                                  # the API on :8080 and the web on :5173
 ```
+
+Then two browser tabs on <http://localhost:5173>, one person in each —
+[doc/demo.md](doc/demo.md) has the whole walkthrough, button by button.
 
 ## How it settles
 
@@ -76,3 +81,4 @@ are clamped to the boundary, so every qualifying message settles identically —
 | [doc/porting-anyhedge.md](doc/porting-anyhedge.md) | What was kept, what Arkade forces, where we chose to differ |
 | [doc/arkade-constraints.md](doc/arkade-constraints.md) | Path rules, batch expiry, client verification |
 | [doc/testing.md](doc/testing.md) | How the covenant is tested against the real VM |
+| [doc/demo.md](doc/demo.md) | Running the demo: what to start, and what to press |

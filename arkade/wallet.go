@@ -145,19 +145,29 @@ func (w *Wallet) ListVtxos(ctx context.Context) ([]types.Vtxo, error) {
 	return spendable, err
 }
 
-// Balance is the sum of the wallet's spendable VTXOs.
-func (w *Wallet) Balance(ctx context.Context) (int64, error) {
-	spendable, err := w.ListVtxos(ctx)
+// Balance is what the wallet can actually spend, and what it holds but cannot.
+//
+// A recoverable VTXO is one whose batch has been swept on chain. The operator
+// refuses to let it be spent offchain — it has to go back through a batch first
+// — so counting it as spendable produces a balance that looks fine and a
+// funding transaction that is rejected.
+func (w *Wallet) Balance(ctx context.Context) (spendable, recoverable int64, err error) {
+	vtxos, err := w.ListVtxos(ctx)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	var total int64
-	for _, v := range spendable {
-		total += int64(v.Amount)
+	for _, v := range vtxos {
+		if v.IsRecoverable() {
+			recoverable += int64(v.Amount)
+			continue
+		}
+		spendable += int64(v.Amount)
 	}
-	return total, nil
+	return spendable, recoverable, nil
 }
 
+// Settle puts the wallet's VTXOs through a batch. It is how boarding finishes,
+// and it is the only way to make a swept VTXO spendable again.
 func (w *Wallet) Settle(ctx context.Context) (string, error) {
 	return w.sdk.Settle(ctx)
 }
@@ -248,6 +258,12 @@ func (w *Wallet) SpendableVtxo(ctx context.Context, min int64) (offchain.VtxoInp
 		if v.Script != wanted || int64(v.Amount) < min {
 			continue
 		}
+		// A VTXO whose batch was swept cannot be spent offchain, whatever the
+		// wallet lists it as. Picking one produces a transaction the operator
+		// refuses, with an error several layers from the cause.
+		if v.IsRecoverable() {
+			continue
+		}
 
 		forfeits := vtxoScript.ForfeitClosures()
 		if len(forfeits) == 0 {
@@ -288,7 +304,8 @@ func (w *Wallet) SpendableVtxo(ctx context.Context, min int64) (offchain.VtxoInp
 	}
 
 	return offchain.VtxoInput{}, nil, fmt.Errorf(
-		"no spendable VTXO at %s worth %d or more; the wallet has %d", wanted, min, len(spendable))
+		"no spendable VTXO at %s worth %d or more; the wallet has %d, some of which may need "+
+			"a batch to recover", wanted, min, len(spendable))
 }
 
 // SignPacket signs the inputs of a packet whose leaf carries the wallet's key

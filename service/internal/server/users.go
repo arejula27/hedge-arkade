@@ -64,6 +64,9 @@ type walletResponse struct {
 	OffchainAddress string `json:"offchain_address"`
 	BoardingAddress string `json:"boarding_address"`
 	SpendableSats   int64  `json:"spendable_sats"`
+	// RecoverableSats is money that is there and cannot be spent offchain
+	// until it has been back through a batch.
+	RecoverableSats int64 `json:"recoverable_sats"`
 }
 
 func (s *Server) wallet(c echo.Context) error {
@@ -75,7 +78,17 @@ func (s *Server) wallet(c echo.Context) error {
 		OffchainAddress: w.OffchainAddress,
 		BoardingAddress: w.BoardingAddress,
 		SpendableSats:   w.SpendableSats,
+		RecoverableSats: w.RecoverableSats,
 	})
+}
+
+// recoverWallet puts swept VTXOs back into spendable ones. It takes a batch, so
+// it is as slow as boarding.
+func (s *Server) recoverWallet(c echo.Context) error {
+	if err := s.app.Recover(c.Request().Context(), caller(c)); err != nil {
+		return err
+	}
+	return c.NoContent(http.StatusAccepted)
 }
 
 type fundWalletRequest struct {

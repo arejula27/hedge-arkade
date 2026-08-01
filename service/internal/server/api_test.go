@@ -147,6 +147,51 @@ func TestFundWalletIsAccepted(t *testing.T) {
 	}
 }
 
+// Money that is there but unspendable has to read as its own thing, or a user
+// sees a balance and a refusal and no way to connect the two.
+func TestWalletSeparatesWhatCannotBeSpentYet(t *testing.T) {
+	h := newHarness(t)
+	h.StackStub.Balances[h.Alice] = 1_000
+	h.StackStub.Recoverable[h.Alice] = 40_000
+
+	rec := h.get(t, "/api/wallet", h.Alice)
+	requireStatus(t, rec, http.StatusOK)
+
+	var body walletResponse
+	decode(t, rec, &body)
+	if body.SpendableSats != 1_000 || body.RecoverableSats != 40_000 {
+		t.Errorf("wallet reports %d spendable and %d recoverable",
+			body.SpendableSats, body.RecoverableSats)
+	}
+
+	rec = h.post(t, "/api/wallet/recover", "", h.Alice)
+	requireStatus(t, rec, http.StatusAccepted)
+
+	rec = h.get(t, "/api/wallet", h.Alice)
+	decode(t, rec, &body)
+	if body.SpendableSats != 41_000 || body.RecoverableSats != 0 {
+		t.Errorf("after recovering: %d spendable, %d recoverable",
+			body.SpendableSats, body.RecoverableSats)
+	}
+}
+
+// And funding says which of the two the shortfall is, because the answer to
+// "top up" and the answer to "recover" are different actions.
+func TestFundSaysWhenTheMoneyIsThereButNotSpendable(t *testing.T) {
+	h := newHarness(t)
+	c := h.accepted(t)
+
+	h.StackStub.Balances[h.Bob] = 0
+	h.StackStub.Recoverable[h.Bob] = 50_000_000
+
+	rec := h.post(t, "/api/contracts/"+c.ID+"/fund", "", h.Alice)
+	requireStatus(t, rec, http.StatusConflict)
+
+	if !strings.Contains(rec.Body.String(), "recover") {
+		t.Errorf("the reason does not mention recovering: %s", rec.Body.String())
+	}
+}
+
 func TestFundWalletRefusesWhatIsNotAnAmount(t *testing.T) {
 	h := newHarness(t)
 

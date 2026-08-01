@@ -272,7 +272,10 @@ func (s *Signer) SignExit(
 type Arkade struct {
 	StackInfo app.Stack
 	Balances  map[uuid.UUID]int64
-	Scripts   map[uuid.UUID][]byte
+	// Recoverable is money a wallet holds that it cannot spend offchain until
+	// it has been back through a batch.
+	Recoverable map[uuid.UUID]int64
+	Scripts     map[uuid.UUID][]byte
 
 	Funded    *domain.Contract
 	FundCalls int
@@ -295,9 +298,10 @@ func NewArkade() *Arkade {
 			Dust:                 330,
 			AllowsBlockTimelocks: true,
 		},
-		Balances: map[uuid.UUID]int64{},
-		Scripts:  map[uuid.UUID][]byte{},
-		TopUps:   map[uuid.UUID]int64{},
+		Balances:    map[uuid.UUID]int64{},
+		Recoverable: map[uuid.UUID]int64{},
+		Scripts:     map[uuid.UUID][]byte{},
+		TopUps:      map[uuid.UUID]int64{},
 	}
 }
 
@@ -307,8 +311,14 @@ func (s *Arkade) Addresses(context.Context, uuid.UUID) (string, string, error) {
 	return "ark1offchain", "bcrt1boarding", nil
 }
 
-func (s *Arkade) Balance(_ context.Context, user uuid.UUID) (int64, error) {
-	return s.Balances[user], nil
+func (s *Arkade) Balance(_ context.Context, user uuid.UUID) (int64, int64, error) {
+	return s.Balances[user], s.Recoverable[user], nil
+}
+
+func (s *Arkade) Recover(_ context.Context, user uuid.UUID) error {
+	s.Balances[user] += s.Recoverable[user]
+	s.Recoverable[user] = 0
+	return nil
 }
 
 func (s *Arkade) VtxoPkScript(_ context.Context, user uuid.UUID) ([]byte, error) {

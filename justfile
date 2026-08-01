@@ -131,16 +131,24 @@ web-build: web-install
 web-lint: web-install
     @{{go}} 'npm --prefix service/frontend run lint'
 
+# Bring the schema up to date.
+#
+# Its own step because two services share one database: if both migrated at
+# startup they would race, one creating tables while the other read a schema
+# that was half there.
+migrate: db-up
+    @{{go}} 'cd service && go run ./cmd/migrate'
+
 # The API alone, on $PORT.
-run: env
+run: migrate
     @{{go}} 'cd service && go run ./cmd/api'
 
-# The oracle alone, on $ORACLE_PORT. It migrates the schema on the way up.
-oracle: db-up
+# The oracle alone, on $ORACLE_PORT.
+oracle: migrate
     @{{go}} 'cd service && go run ./cmd/oracle'
 
 # The API and the Vite dev server together. Ctrl-C stops both.
-dev: db-up web-install
+dev: migrate web-install
     @{{go}} 'trap "kill 0" EXIT INT TERM; \
              (cd service && go run ./cmd/api) & \
              npm --prefix service/frontend run dev'

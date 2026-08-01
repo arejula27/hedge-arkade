@@ -49,10 +49,6 @@ func run() error {
 	}
 	defer db.Close()
 
-	if err := postgres.Migrate(ctx, db); err != nil {
-		return err
-	}
-
 	store := postgres.NewOracleStore(db)
 	publisher := oracle.NewPublisher(store, key, cfg.StartPrice)
 

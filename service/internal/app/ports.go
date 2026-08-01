@@ -86,7 +86,12 @@ type Arkade interface {
 	// Addresses is where a user can be paid: offchain from inside Arkade,
 	// boarding from the chain.
 	Addresses(ctx context.Context, user uuid.UUID) (offchain, boarding string, err error)
-	Balance(ctx context.Context, user uuid.UUID) (int64, error)
+	// Balance is what the user can spend, and what they hold but cannot until
+	// it has been through a batch.
+	Balance(ctx context.Context, user uuid.UUID) (spendable, recoverable int64, err error)
+
+	// Recover puts swept VTXOs back into fresh ones.
+	Recover(ctx context.Context, user uuid.UUID) error
 
 	// VtxoPkScript is where a user is paid inside Arkade, and so what a
 	// contract's payout has to name.

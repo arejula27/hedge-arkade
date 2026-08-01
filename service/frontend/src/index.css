@@ -1,1 +1,26 @@
 @import "tailwindcss";
+
+@theme {
+  --color-ink: #0b0d10;
+  --color-panel: #14171c;
+  --color-edge: #232830;
+  --color-muted: #8b95a5;
+  --color-short: #4ade80;
+  --color-long: #60a5fa;
+  --color-warn: #fbbf24;
+  --color-bad: #f87171;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-ink text-slate-200 antialiased;
+}
+
+/* Hex, addresses and sats are read character by character, so they get a
+   monospace treatment everywhere they appear. */
+.mono {
+  @apply font-mono text-[0.8125rem] tracking-tight;
+}

@@ -49,6 +49,12 @@ type Wallet struct {
 	OffchainAddress string
 	BoardingAddress string
 	SpendableSats   int64
+
+	// RecoverableSats is money the wallet holds and cannot spend offchain: its
+	// batch was swept, so it has to go back through one. Reporting it apart
+	// from the balance is the difference between "you have no money" and "your
+	// money needs one more step".
+	RecoverableSats int64
 }
 
 func (a *App) Wallet(ctx context.Context, user uuid.UUID) (Wallet, error) {
@@ -56,15 +62,22 @@ func (a *App) Wallet(ctx context.Context, user uuid.UUID) (Wallet, error) {
 	if err != nil {
 		return Wallet{}, err
 	}
-	balance, err := a.stack.Balance(ctx, user)
+	spendable, recoverable, err := a.stack.Balance(ctx, user)
 	if err != nil {
 		return Wallet{}, err
 	}
 	return Wallet{
 		OffchainAddress: offchain,
 		BoardingAddress: boarding,
-		SpendableSats:   balance,
+		SpendableSats:   spendable,
+		RecoverableSats: recoverable,
 	}, nil
+}
+
+// Recover puts a user's swept VTXOs back into spendable ones. It takes a batch,
+// so it is as slow as boarding.
+func (a *App) Recover(ctx context.Context, user uuid.UUID) error {
+	return a.stack.Recover(ctx, user)
 }
 
 // TopUp boards sats from the regtest faucet.

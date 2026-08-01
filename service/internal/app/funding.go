@@ -60,13 +60,18 @@ func (a *App) affordable(ctx context.Context, c *domain.Contract) error {
 			return fmt.Errorf("the %s side is empty", side.name)
 		}
 
-		balance, err := a.stack.Balance(ctx, *side.user)
+		balance, recoverable, err := a.stack.Balance(ctx, *side.user)
 		if err != nil {
 			return fmt.Errorf("the %s's balance: %w", side.name, err)
 		}
 
 		needed := side.stake + int64(a.stack.Stack().Dust) + 1
 		if balance < needed {
+			if recoverable > 0 {
+				return notYet(
+					"the %s has %d spendable sats and needs %d, with %d more waiting on a batch to recover",
+					side.name, balance, needed, recoverable)
+			}
 			return notYet(
 				"the %s has %d sats and needs %d: their stake of %d plus change above dust",
 				side.name, balance, needed, side.stake)

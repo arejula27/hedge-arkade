@@ -4,10 +4,16 @@ The web service. Generated with [go-blueprint](https://github.com/melkeydev/go-b
 (`--framework echo --driver postgres --feature react,tailwind,docker`) and then rearranged.
 
 ```sh
-just db-up    # postgres, from docker-compose.yml
+just migrate  # postgres, and the schema
+just oracle   # the oracle on :8081
 just dev      # the API on :8080 and the Vite dev server on :5173
 just run      # the API alone
 ```
+
+Migrating is its own step because two services share one database. If both
+migrated at startup they would race, one creating tables while the other read a
+schema that was half there — which is exactly what happened the first time they
+were started together.
 
 `just env` writes `.env` from `.env.example` on first use; the real `.env` is gitignored.
 

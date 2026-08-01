@@ -58,10 +58,6 @@ func run() error {
 	}
 	defer db.Close()
 
-	if err := postgres.Migrate(ctx, db); err != nil {
-		return err
-	}
-
 	// Connecting reads both services' GetInfo, which is the readiness signal
 	// that matters: arkd's port opens well before it can answer. Nothing about
 	// a contract is a constant we chose.

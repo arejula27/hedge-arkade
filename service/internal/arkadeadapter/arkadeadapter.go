@@ -44,12 +44,21 @@ func (a *Adapter) Addresses(ctx context.Context, user uuid.UUID) (string, string
 	return w.Addresses(ctx)
 }
 
-func (a *Adapter) Balance(ctx context.Context, user uuid.UUID) (int64, error) {
+func (a *Adapter) Balance(ctx context.Context, user uuid.UUID) (int64, int64, error) {
 	w, err := a.wallets.Wallet(ctx, user)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	return w.Balance(ctx)
+}
+
+func (a *Adapter) Recover(ctx context.Context, user uuid.UUID) error {
+	w, err := a.wallets.Wallet(ctx, user)
+	if err != nil {
+		return err
+	}
+	_, err = w.Settle(ctx)
+	return err
 }
 
 // VtxoPkScript is where a user is paid inside Arkade.

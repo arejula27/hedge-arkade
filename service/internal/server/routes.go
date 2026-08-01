@@ -36,6 +36,7 @@ func (s *Server) Routes(allowOrigin string) http.Handler {
 
 	api.GET("/wallet", s.wallet, s.identified)
 	api.POST("/wallet/fund", s.fundWallet, s.identified)
+	api.POST("/wallet/recover", s.recoverWallet, s.identified)
 
 	api.POST("/contracts", s.propose, s.identified)
 	api.GET("/contracts", s.listContracts)
