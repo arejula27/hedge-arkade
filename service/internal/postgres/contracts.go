@@ -12,22 +12,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// ErrConflict is a contract that moved on between being read and being
-// written. It is a 409, not a 500: two workers racing for the same contract is
-// expected, and one of them losing is the mechanism working.
-var ErrConflict = errors.New("the contract is no longer in the state it was read in")
-
-// Lost says whether an error means someone else got there first.
-//
-// There are two ways to lose the same race: the row moved between the read and
-// the write (ErrConflict), or it had already moved before the read, so the
-// transition was refused by the domain. Both are a 409 and neither is worth
-// retrying without re-reading — and the caller should not have to tell them
-// apart to know that.
-func Lost(err error) bool {
-	return errors.Is(err, ErrConflict) || errors.Is(err, domain.ErrTransition)
-}
-
 type ContractRepo struct {
 	db *DB
 }
@@ -41,6 +25,9 @@ const contractColumns = `
 	short_key, long_key, arkd_signer, emulator_signer,
 	exit_delay_value, exit_delay_blocks, enable_mutual_redemption,
 	pk_script, short_stake, long_stake, funding_txid, funding_vout`
+
+// updated_at is read but never written by hand: every UPDATE sets it to now().
+const contractSelect = contractColumns + `, updated_at`
 
 func (r *ContractRepo) Create(ctx context.Context, c *domain.Contract) error {
 	_, err := r.db.pool.ExecContext(ctx,
@@ -56,27 +43,16 @@ func (r *ContractRepo) Create(ctx context.Context, c *domain.Contract) error {
 
 func (r *ContractRepo) Get(ctx context.Context, id uuid.UUID) (*domain.Contract, error) {
 	row := r.db.pool.QueryRowContext(ctx,
-		`SELECT `+contractColumns+` FROM contracts WHERE id = $1`, id)
+		`SELECT `+contractSelect+` FROM contracts WHERE id = $1`, id)
 
 	c, err := scanContract(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
+		return nil, domain.ErrNotFound
 	}
 	return c, err
 }
 
-// Filter is what the lists the UI asks for come down to: what is on offer, and
-// what is mine.
-type Filter struct {
-	// State restricts to one state. Empty means any.
-	State domain.State
-	// User restricts to contracts that user is a party to. Nil means anyone's.
-	User *uuid.UUID
-	// Open restricts to contracts still looking for a counterparty.
-	Open bool
-}
-
-func (r *ContractRepo) List(ctx context.Context, f Filter) ([]*domain.Contract, error) {
+func (r *ContractRepo) List(ctx context.Context, f domain.ContractFilter) ([]*domain.Contract, error) {
 	var where []string
 	var args []any
 
@@ -93,7 +69,7 @@ func (r *ContractRepo) List(ctx context.Context, f Filter) ([]*domain.Contract, 
 		where = append(where, "state = 'proposed' AND (short_user_id IS NULL OR long_user_id IS NULL)")
 	}
 
-	query := `SELECT ` + contractColumns + ` FROM contracts`
+	query := `SELECT ` + contractSelect + ` FROM contracts`
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -110,7 +86,7 @@ func (r *ContractRepo) InState(ctx context.Context, states ...domain.State) ([]*
 		names[i] = string(s)
 	}
 	return r.query(ctx,
-		`SELECT `+contractColumns+` FROM contracts WHERE state = ANY($1) ORDER BY updated_at`,
+		`SELECT `+contractSelect+` FROM contracts WHERE state = ANY($1) ORDER BY updated_at`,
 		names)
 }
 
@@ -135,9 +111,36 @@ func (r *ContractRepo) Advance(
 	defer tx.Rollback()
 
 	c.State = to
+	if err := write(ctx, tx, c, from); err != nil {
+		c.State = from
+		return err
+	}
+
+	if err := r.event(ctx, tx, c.ID, from, to, detail); err != nil {
+		c.State = from
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		c.State = from
+		return fmt.Errorf("committing the transition: %w", err)
+	}
+	return nil
+}
+
+// Save writes the contract without moving it.
+//
+// A step that has produced something irreversible — a funding transaction the
+// operator has already accepted — has to record it before the next thing that
+// might fail. Otherwise a retry starts from a row that never heard about it and
+// does the irreversible thing again.
+func (r *ContractRepo) Save(ctx context.Context, c *domain.Contract) error {
+	return write(ctx, r.db.pool, c, c.State)
+}
+
+func write(ctx context.Context, on execer, c *domain.Contract, from domain.State) error {
 	args := append(writeArgs(c), from)
 
-	result, err := tx.ExecContext(ctx,
+	result, err := on.ExecContext(ctx,
 		`UPDATE contracts SET
 			state = $2, creator = $3, short_user_id = $4, long_user_id = $5,
 			nominal_units = $6, leverage_sats = $7, payout_sats = $8,
@@ -152,27 +155,15 @@ func (r *ContractRepo) Advance(
 			updated_at = now()
 		 WHERE id = $1 AND state = $28`, args...)
 	if err != nil {
-		c.State = from
-		return fmt.Errorf("moving %s to %s: %w", c.ID, to, err)
+		return fmt.Errorf("writing %s: %w", c.ID, err)
 	}
 
 	changed, err := result.RowsAffected()
 	if err != nil {
-		c.State = from
 		return err
 	}
 	if changed == 0 {
-		c.State = from
-		return ErrConflict
-	}
-
-	if err := r.event(ctx, tx, c.ID, from, to, detail); err != nil {
-		c.State = from
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		c.State = from
-		return fmt.Errorf("committing the transition: %w", err)
+		return domain.ErrConflict
 	}
 	return nil
 }
@@ -276,7 +267,7 @@ func scanContract(s scanner) (*domain.Contract, error) {
 		&c.Terms.StartTimestamp, &c.Terms.MaturityTimestamp,
 		&c.ShortKey, &c.LongKey, &c.ArkdSigner, &c.EmulatorSigner,
 		&delay, &blocks, &c.EnableMutualRedemption, &c.PkScript,
-		&c.ShortStake, &c.LongStake, &txid, &vout,
+		&c.ShortStake, &c.LongStake, &txid, &vout, &c.UpdatedAt,
 	); err != nil {
 		return nil, err
 	}

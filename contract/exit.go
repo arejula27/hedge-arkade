@@ -242,6 +242,44 @@ func (c Contract) SignExit(key *btcec.PrivateKey, tx *wire.MsgTx, amount int64) 
 	return sig.Serialize(), nil
 }
 
+// VerifyExitSignature checks one party's signature against the transaction it
+// is supposed to cover.
+//
+// PreSignExit refuses a key that is not the contract's, but it can only do that
+// because it holds both private keys at once — which a service that never
+// custodies a party's key cannot. Composing the exit from two separate SignExit
+// calls loses that check, and a signature from the wrong key produces a package
+// that looks complete and fails only when it is finally needed, months later
+// and with the operator already gone. This is how the check is kept.
+func (c Contract) VerifyExitSignature(
+	key *btcec.PublicKey, sig []byte, tx *wire.MsgTx, amount int64,
+) error {
+	if key == nil {
+		return fmt.Errorf("public key is nil")
+	}
+
+	parsed, err := schnorr.ParseSignature(sig)
+	if err != nil {
+		return fmt.Errorf("parsing the exit signature: %w", err)
+	}
+
+	digest, err := c.ExitSighash(tx, amount)
+	if err != nil {
+		return err
+	}
+
+	// The leaf verifies against the x-only key, so a signature made with the
+	// odd-Y sibling has to pass here too.
+	xOnly, err := schnorr.ParsePubKey(schnorr.SerializePubKey(key))
+	if err != nil {
+		return fmt.Errorf("parsing the public key: %w", err)
+	}
+	if !parsed.Verify(digest, xOnly) {
+		return fmt.Errorf("the exit signature is not this key's")
+	}
+	return nil
+}
+
 // PreSignExit builds the exit transaction and has both parties sign it. This is
 // what happens at funding: after it returns, neither party depends on the other
 // or on the operator to get out.

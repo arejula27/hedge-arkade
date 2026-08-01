@@ -26,6 +26,25 @@ type Config struct {
 
 	// Database is a libpq connection string.
 	Database string
+
+	// Oracle is where the oracle answers. It is a separate process that knows
+	// about no contract, so the service reaches it over HTTP like anyone else.
+	Oracle string
+
+	// ServiceSeed is the service's own key, hex encoded: the third of the
+	// 2-of-3 a unilateral exit sweeps into.
+	//
+	// It is one of only two keys the coordinator ever holds — this and the
+	// oracle's — and it never touches a party's funds on any collaborative
+	// path. Like the oracle's it must survive restarts: it is baked into every
+	// pre-signed exit, and losing it leaves those exits with only two usable
+	// signatures out of three.
+	ServiceSeed string
+
+	// RegtestScript is scripts/regtest.sh, which is where the faucet lives.
+	// There is no such thing on a real network, and the demo says so by
+	// leaving this empty.
+	RegtestScript string
 }
 
 // Load reads the environment. It fails rather than defaulting, except for the
@@ -41,10 +60,18 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	seed, err := seedVar("SERVICE_SEED")
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
-		Port:     port,
-		Env:      stringVar("APP_ENV", "local"),
-		Database: db,
+		Port:          port,
+		Env:           stringVar("APP_ENV", "local"),
+		Database:      db,
+		Oracle:        stringVar("ORACLE_URL", "http://localhost:8081"),
+		ServiceSeed:   seed,
+		RegtestScript: stringVar("REGTEST_SCRIPT", "../scripts/regtest.sh"),
 	}, nil
 }
 

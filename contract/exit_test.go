@@ -552,3 +552,73 @@ func TestTheExitRevealsTheExitLeaf(t *testing.T) {
 		}
 	}
 }
+
+// A service that never holds both party keys cannot use PreSignExit, so it
+// composes the package from ExitTx plus two separate SignExit calls — and loses
+// the check PreSignExit does for free. VerifyExitSignature is how it keeps it.
+func TestVerifyExitSignatureAcceptsWhatTheLeafWillAccept(t *testing.T) {
+	c := contract()
+	s := sweep(t)
+
+	tx, err := c.ExitTx(contractOutpoint(), exitAmount, exitFee, s.PkScript)
+	if err != nil {
+		t.Fatalf("ExitTx: %v", err)
+	}
+
+	sig, err := c.SignExit(shortPriv, tx, exitAmount)
+	if err != nil {
+		t.Fatalf("SignExit: %v", err)
+	}
+
+	if err := c.VerifyExitSignature(shortPriv.PubKey(), sig, tx, exitAmount); err != nil {
+		t.Errorf("a correct signature was refused: %v", err)
+	}
+
+	// The whole point: the wrong party's key must not verify.
+	if err := c.VerifyExitSignature(longPriv.PubKey(), sig, tx, exitAmount); err == nil {
+		t.Error("the long's key verified the short's signature")
+	}
+}
+
+func TestVerifyExitSignatureRefusesWhatWouldFailLater(t *testing.T) {
+	c := contract()
+	s := sweep(t)
+
+	tx, err := c.ExitTx(contractOutpoint(), exitAmount, exitFee, s.PkScript)
+	if err != nil {
+		t.Fatalf("ExitTx: %v", err)
+	}
+	sig, err := c.SignExit(shortPriv, tx, exitAmount)
+	if err != nil {
+		t.Fatalf("SignExit: %v", err)
+	}
+
+	var elsewhere chainhash.Hash
+	copy(elsewhere[:], bytes.Repeat([]byte{0x99}, 32))
+	other, err := c.ExitTx(
+		wire.OutPoint{Hash: elsewhere, Index: 0}, exitAmount, exitFee, s.PkScript)
+	if err != nil {
+		t.Fatalf("ExitTx: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		key    *btcec.PublicKey
+		sig    []byte
+		tx     *wire.MsgTx
+		amount int64
+	}{
+		{"a signature over a different outpoint", shortPriv.PubKey(), sig, other, exitAmount},
+		{"a different input amount", shortPriv.PubKey(), sig, tx, exitAmount - 1},
+		{"a stranger's key", servicePriv.PubKey(), sig, tx, exitAmount},
+		{"a signature that is not one", shortPriv.PubKey(), []byte{0x01, 0x02}, tx, exitAmount},
+		{"an empty signature", shortPriv.PubKey(), nil, tx, exitAmount},
+		{"no key at all", nil, sig, tx, exitAmount},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := c.VerifyExitSignature(tc.key, tc.sig, tc.tx, tc.amount); err == nil {
+				t.Error("VerifyExitSignature accepted it")
+			}
+		})
+	}
+}

@@ -7,9 +7,14 @@ package domain
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/arejula27/hedge/contract"
 	arklib "github.com/arkade-os/arkd/pkg/ark-lib"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/google/uuid"
 )
 
@@ -82,6 +87,63 @@ type Contract struct {
 
 	// Funding is the contract VTXO, once there is one.
 	Funding *Outpoint
+
+	// UpdatedAt is when the contract last moved. The worker reads it to tell a
+	// step that is slow from one that will never finish.
+	UpdatedAt time.Time
+}
+
+// Covenant builds the contract `contract` understands from the row.
+//
+// This is the one place a stored contract becomes the thing whose address is
+// derived, so a row that has drifted from the address it was funded at fails
+// here rather than somewhere further along.
+func (c *Contract) Covenant() (contract.Contract, error) {
+	keys := contract.Keys{}
+	for _, k := range []struct {
+		name string
+		raw  []byte
+		into **btcec.PublicKey
+	}{
+		{"short", c.ShortKey, &keys.Short},
+		{"long", c.LongKey, &keys.Long},
+		{"operator", c.ArkdSigner, &keys.ArkdSigner},
+		{"emulator", c.EmulatorSigner, &keys.EmulatorSigner},
+	} {
+		if len(k.raw) == 0 {
+			return contract.Contract{}, fmt.Errorf("the %s key is not set yet", k.name)
+		}
+		parsed, err := btcec.ParsePubKey(k.raw)
+		if err != nil {
+			return contract.Contract{}, fmt.Errorf("the %s key: %w", k.name, err)
+		}
+		*k.into = parsed
+	}
+
+	return contract.Contract{
+		Terms:                  c.Terms,
+		Keys:                   keys,
+		ExitDelay:              c.ExitDelay,
+		EnableMutualRedemption: c.EnableMutualRedemption,
+	}, nil
+}
+
+// Address renders the contract's taproot output key as an address on the given
+// network. It is what a party checks before funding.
+func (c *Contract) Address(params *chaincfg.Params) (string, error) {
+	covenant, err := c.Covenant()
+	if err != nil {
+		return "", err
+	}
+	key, err := covenant.TaprootKey()
+	if err != nil {
+		return "", err
+	}
+	addr, err := btcutil.NewAddressTaproot(schnorr.SerializePubKey(key), params)
+	if err != nil {
+		return "", fmt.Errorf("rendering the contract address: %w", err)
+	}
+	return addr.EncodeAddress(), nil
 }
 
 // UserOn is whoever holds the given side, if anyone does yet.
@@ -138,4 +200,15 @@ type Event struct {
 	From       State
 	To         State
 	Detail     string
+}
+
+// ContractFilter is what the lists the UI asks for come down to: what is on
+// offer, and what is mine.
+type ContractFilter struct {
+	// State restricts to one state. Empty means any.
+	State State
+	// User restricts to contracts that user is a party to. Nil means anyone's.
+	User *uuid.UUID
+	// Open restricts to contracts still looking for a counterparty.
+	Open bool
 }

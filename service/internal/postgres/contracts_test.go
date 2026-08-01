@@ -110,21 +110,21 @@ func TestTwoUsersCannotShareAName(t *testing.T) {
 
 	second := domain.User{ID: uuid.New(), Name: "alice", PublicKey: []byte{0x02}}
 	err := users.Create(t.Context(), second, []byte{0x11})
-	if !errors.Is(err, ErrNameTaken) {
-		t.Errorf("Create gave %v, want ErrNameTaken", err)
+	if !errors.Is(err, domain.ErrNameTaken) {
+		t.Errorf("Create gave %v, want domain.ErrNameTaken", err)
 	}
 }
 
 func TestAMissingUserIsNotFound(t *testing.T) {
 	users, _ := repos(t)
 
-	if _, err := users.Get(t.Context(), uuid.New()); !errors.Is(err, ErrNotFound) {
+	if _, err := users.Get(t.Context(), uuid.New()); !errors.Is(err, domain.ErrNotFound) {
 		t.Errorf("Get gave %v", err)
 	}
-	if _, err := users.ByName(t.Context(), "nobody"); !errors.Is(err, ErrNotFound) {
+	if _, err := users.ByName(t.Context(), "nobody"); !errors.Is(err, domain.ErrNotFound) {
 		t.Errorf("ByName gave %v", err)
 	}
-	if _, err := users.Seed(t.Context(), uuid.New()); !errors.Is(err, ErrNotFound) {
+	if _, err := users.Seed(t.Context(), uuid.New()); !errors.Is(err, domain.ErrNotFound) {
 		t.Errorf("Seed gave %v", err)
 	}
 }
@@ -305,8 +305,8 @@ func TestAdvanceRefusesAContractThatMovedOn(t *testing.T) {
 
 	second.LongUser = &alice.ID
 	err = contracts.Advance(t.Context(), second, domain.Accepted, "")
-	if !errors.Is(err, ErrConflict) {
-		t.Fatalf("the second Advance gave %v, want ErrConflict", err)
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("the second Advance gave %v, want domain.ErrConflict", err)
 	}
 
 	got, _ := contracts.Get(t.Context(), c.ID)
@@ -350,7 +350,7 @@ func TestOnlyOneAcceptWins(t *testing.T) {
 		switch {
 		case err == nil:
 			won++
-		case Lost(err):
+		case domain.Lost(err):
 		default:
 			t.Errorf("racer %d failed with something other than a conflict: %v", i, err)
 		}
@@ -379,14 +379,14 @@ func TestListFilters(t *testing.T) {
 
 	for _, tc := range []struct {
 		name   string
-		filter Filter
+		filter domain.ContractFilter
 		want   []uuid.UUID
 	}{
-		{"everything", Filter{}, []uuid.UUID{open.ID, taken.ID, other.ID}},
-		{"by state", Filter{State: domain.Accepted}, []uuid.UUID{taken.ID}},
-		{"by user", Filter{User: &bob.ID}, []uuid.UUID{taken.ID, other.ID}},
-		{"still on offer", Filter{Open: true}, []uuid.UUID{open.ID, other.ID}},
-		{"one user's offers", Filter{Open: true, User: &alice.ID}, []uuid.UUID{open.ID}},
+		{"everything", domain.ContractFilter{}, []uuid.UUID{open.ID, taken.ID, other.ID}},
+		{"by state", domain.ContractFilter{State: domain.Accepted}, []uuid.UUID{taken.ID}},
+		{"by user", domain.ContractFilter{User: &bob.ID}, []uuid.UUID{taken.ID, other.ID}},
+		{"still on offer", domain.ContractFilter{Open: true}, []uuid.UUID{open.ID, other.ID}},
+		{"one user's offers", domain.ContractFilter{Open: true, User: &alice.ID}, []uuid.UUID{open.ID}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := contracts.List(t.Context(), tc.filter)
@@ -440,7 +440,7 @@ func TestInStateFindsWhatIsStuck(t *testing.T) {
 func TestAMissingContractIsNotFound(t *testing.T) {
 	_, contracts := repos(t)
 
-	if _, err := contracts.Get(t.Context(), uuid.New()); !errors.Is(err, ErrNotFound) {
+	if _, err := contracts.Get(t.Context(), uuid.New()); !errors.Is(err, domain.ErrNotFound) {
 		t.Errorf("Get gave %v", err)
 	}
 }
@@ -496,16 +496,16 @@ func TestLostRecognisesBothWaysOfLosing(t *testing.T) {
 		err  error
 		want bool
 	}{
-		{"the row moved under us", ErrConflict, true},
+		{"the row moved under us", domain.ErrConflict, true},
 		{"it had already moved before we read it", domain.Active.Transition(domain.Proposed), true},
-		{"wrapped", fmt.Errorf("accepting: %w", ErrConflict), true},
+		{"wrapped", fmt.Errorf("accepting: %w", domain.ErrConflict), true},
 		{"a state that does not exist", domain.State("nonsense").Transition(domain.Active), false},
-		{"the row is not there", ErrNotFound, false},
+		{"the row is not there", domain.ErrNotFound, false},
 		{"something else entirely", errors.New("the database is down"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := Lost(tc.err); got != tc.want {
-				t.Errorf("Lost(%v) = %v, want %v", tc.err, got, tc.want)
+			if got := domain.Lost(tc.err); got != tc.want {
+				t.Errorf("domain.Lost(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
 	}

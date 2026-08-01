@@ -11,15 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// ErrNotFound is what every repository returns for a row that is not there, so
-// a handler can map one error to 404 rather than each repository inventing its
-// own.
-var ErrNotFound = errors.New("not found")
-
-// ErrNameTaken is a unique violation on users.name, named because it is the
-// one a user can actually do something about.
-var ErrNameTaken = errors.New("that name is taken")
-
 type UserRepo struct {
 	db *DB
 }
@@ -40,7 +31,7 @@ func (r *UserRepo) Create(ctx context.Context, u domain.User, seed []byte) error
 		u.ID, u.Name, u.PublicKey,
 	); err != nil {
 		if uniqueViolation(err) {
-			return ErrNameTaken
+			return domain.ErrNameTaken
 		}
 		return fmt.Errorf("writing the user: %w", err)
 	}
@@ -88,7 +79,7 @@ func (r *UserRepo) Seed(ctx context.Context, id uuid.UUID) ([]byte, error) {
 	err := r.db.pool.QueryRowContext(ctx,
 		`SELECT seed FROM wallets WHERE user_id = $1`, id).Scan(&seed)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
+		return nil, domain.ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("reading a wallet: %w", err)
@@ -100,7 +91,7 @@ func (r *UserRepo) one(ctx context.Context, query string, args ...any) (domain.U
 	var u domain.User
 	err := r.db.pool.QueryRowContext(ctx, query, args...).Scan(&u.ID, &u.Name, &u.PublicKey)
 	if errors.Is(err, sql.ErrNoRows) {
-		return domain.User{}, ErrNotFound
+		return domain.User{}, domain.ErrNotFound
 	}
 	if err != nil {
 		return domain.User{}, fmt.Errorf("reading a user: %w", err)

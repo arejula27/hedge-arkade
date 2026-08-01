@@ -7,13 +7,14 @@ import (
 
 func TestLoadReadsTheEnvironment(t *testing.T) {
 	setEnv(t, map[string]string{
-		"PORT":        "9090",
-		"APP_ENV":     "staging",
-		"DB_HOST":     "db.internal",
-		"DB_PORT":     "6543",
-		"DB_NAME":     "hedge",
-		"DB_USER":     "hedge",
-		"DB_PASSWORD": "hunter2",
+		"PORT":         "9090",
+		"APP_ENV":      "staging",
+		"DB_HOST":      "db.internal",
+		"DB_PORT":      "6543",
+		"DB_NAME":      "hedge",
+		"DB_USER":      "hedge",
+		"DB_PASSWORD":  "hunter2",
+		"SERVICE_SEED": strings.Repeat("26", 32),
 	})
 
 	cfg, err := Load()
@@ -36,10 +37,11 @@ func TestLoadReadsTheEnvironment(t *testing.T) {
 // is assembled rather than read whole.
 func TestLoadEscapesThePassword(t *testing.T) {
 	setEnv(t, map[string]string{
-		"DB_HOST":     "localhost",
-		"DB_NAME":     "hedge",
-		"DB_USER":     "hedge",
-		"DB_PASSWORD": "p@ss/word?x",
+		"DB_HOST":      "localhost",
+		"DB_NAME":      "hedge",
+		"DB_USER":      "hedge",
+		"DB_PASSWORD":  "p@ss/word?x",
+		"SERVICE_SEED": strings.Repeat("26", 32),
 	})
 
 	cfg, err := Load()
@@ -53,10 +55,11 @@ func TestLoadEscapesThePassword(t *testing.T) {
 
 func TestLoadRefusesAnIncompleteEnvironment(t *testing.T) {
 	full := map[string]string{
-		"DB_HOST":     "localhost",
-		"DB_NAME":     "hedge",
-		"DB_USER":     "hedge",
-		"DB_PASSWORD": "hunter2",
+		"DB_HOST":      "localhost",
+		"DB_NAME":      "hedge",
+		"DB_USER":      "hedge",
+		"DB_PASSWORD":  "hunter2",
+		"SERVICE_SEED": strings.Repeat("26", 32),
 	}
 
 	for missing := range full {
@@ -78,11 +81,12 @@ func TestLoadRefusesAnIncompleteEnvironment(t *testing.T) {
 
 func TestLoadRefusesANonNumericPort(t *testing.T) {
 	setEnv(t, map[string]string{
-		"PORT":        "eight thousand",
-		"DB_HOST":     "localhost",
-		"DB_NAME":     "hedge",
-		"DB_USER":     "hedge",
-		"DB_PASSWORD": "hunter2",
+		"PORT":         "eight thousand",
+		"DB_HOST":      "localhost",
+		"DB_NAME":      "hedge",
+		"DB_USER":      "hedge",
+		"DB_PASSWORD":  "hunter2",
+		"SERVICE_SEED": strings.Repeat("26", 32),
 	})
 
 	if _, err := Load(); err == nil {
@@ -99,6 +103,7 @@ func setEnv(t *testing.T, env map[string]string) {
 		"PORT", "APP_ENV",
 		"DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD",
 		"DB_SSLMODE", "DB_SCHEMA",
+		"ORACLE_URL", "SERVICE_SEED", "REGTEST_SCRIPT",
 		"ORACLE_PORT", "ORACLE_INTERVAL_SECONDS", "ORACLE_SEED",
 		"ORACLE_START_PRICE", "ORACLE_ALLOW_MANUAL",
 	} {
@@ -106,5 +111,51 @@ func setEnv(t *testing.T, env map[string]string) {
 	}
 	for name, value := range env {
 		t.Setenv(name, value)
+	}
+}
+
+// The service's key is baked into every pre-signed exit, so a mistyped one that
+// only fails when a party needs to leave is a service that starts and then
+// cannot honour what it promised.
+func TestLoadRefusesAServiceSeedThatIsNotAKey(t *testing.T) {
+	for _, tc := range []struct{ name, seed string }{
+		{"not hex", strings.Repeat("zz", 32)},
+		{"too short", strings.Repeat("26", 31)},
+		{"too long", strings.Repeat("26", 33)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setEnv(t, map[string]string{
+				"DB_HOST":      "localhost",
+				"DB_NAME":      "hedge",
+				"DB_USER":      "hedge",
+				"DB_PASSWORD":  "hunter2",
+				"SERVICE_SEED": tc.seed,
+			})
+
+			if _, err := Load(); err == nil {
+				t.Error("Load accepted it")
+			}
+		})
+	}
+}
+
+func TestLoadDefaultsTheOracleAndTheFaucet(t *testing.T) {
+	setEnv(t, map[string]string{
+		"DB_HOST":      "localhost",
+		"DB_NAME":      "hedge",
+		"DB_USER":      "hedge",
+		"DB_PASSWORD":  "hunter2",
+		"SERVICE_SEED": strings.Repeat("26", 32),
+	})
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Oracle != "http://localhost:8081" {
+		t.Errorf("Oracle = %q", cfg.Oracle)
+	}
+	if cfg.RegtestScript != "../scripts/regtest.sh" {
+		t.Errorf("RegtestScript = %q", cfg.RegtestScript)
 	}
 }
