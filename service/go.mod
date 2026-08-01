@@ -3,6 +3,7 @@ module github.com/arejula27/hedge/service
 go 1.26.5
 
 require (
+	github.com/arkade-os/arkd/pkg/ark-lib v0.8.1-0.20260318170839-137daaec3a70
 	github.com/btcsuite/btcd/btcec/v2 v2.3.5
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/joho/godotenv v1.5.1
@@ -13,7 +14,6 @@ require (
 )
 
 require (
-	github.com/arkade-os/arkd/pkg/ark-lib v0.8.1-0.20260318170839-137daaec3a70 // indirect
 	github.com/arkade-os/arkd/pkg/errors v0.0.0-20260303153651-8615412e4dea // indirect
 	github.com/arkade-os/emulator/pkg/arkade v0.0.0-20260728084232-b2c7d853d267 // indirect
 	github.com/bits-and-blooms/bitset v1.20.0 // indirect
@@ -59,7 +59,7 @@ require (
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
-	github.com/google/uuid v1.6.0 // indirect
+	github.com/google/uuid v1.6.0
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
