@@ -43,8 +43,10 @@ CREATE TABLE contracts (
     payout_sats       BIGINT NOT NULL,
     low_liquidation   BIGINT NOT NULL,
     high_liquidation  BIGINT NOT NULL,
-    short_lock_script BYTEA  NOT NULL,
-    long_lock_script  BYTEA  NOT NULL,
+    -- Null while the contract is on offer: only the creator's payout script is
+    -- known, and the other arrives with whoever accepts.
+    short_lock_script BYTEA,
+    long_lock_script  BYTEA,
     oracle_pubkey     BYTEA  NOT NULL,
     start_ts          BIGINT NOT NULL,
     maturity_ts       BIGINT NOT NULL,
@@ -52,9 +54,9 @@ CREATE TABLE contracts (
     -- The four keys the taproot tree is built from. The operator's and the
     -- emulator's are stored rather than re-read from GetInfo: they are baked
     -- into the address, so a rotated key must not silently move a funded
-    -- contract.
-    short_key       BYTEA NOT NULL,
-    long_key        BYTEA NOT NULL,
+    -- contract. The party keys are null until both parties exist.
+    short_key       BYTEA,
+    long_key        BYTEA,
     arkd_signer     BYTEA NOT NULL,
     emulator_signer BYTEA NOT NULL,
 
@@ -62,7 +64,9 @@ CREATE TABLE contracts (
     exit_delay_blocks        BOOLEAN NOT NULL,
     enable_mutual_redemption BOOLEAN NOT NULL,
 
-    pk_script BYTEA NOT NULL,
+    -- The address is a function of both payout scripts, so it does not exist
+    -- until both sides do.
+    pk_script BYTEA,
 
     -- What each side puts in, fixed at the opening price. They sum to
     -- payout_sats, which is what the covenant pins the input to.

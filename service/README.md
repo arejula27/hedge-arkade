@@ -17,21 +17,46 @@ Dependencies point inwards. Nothing below `internal/server` imports echo, and no
 `internal/postgres` knows SQL exists.
 
 ```
-cmd/api              composition root — the only place that wires the layers together
-cmd/oracle           the oracle's composition root
-internal/server      transport: echo, routes, handlers. The framework stops here
-internal/oracleserver the oracle's transport. echo lives in these two and nowhere else
-internal/oracle      the publisher and its storage port. No HTTP, no SQL
-internal/postgres    storage adapter: the pool, the health probe, the migrations
-internal/config      the environment, read once at startup into typed values
-frontend             Vite + React + TypeScript, Tailwind v4
+cmd/api                composition root — the only place that wires the layers together
+cmd/oracle             the oracle's composition root
+internal/server        transport: echo, routes, handlers. The framework stops here
+internal/oracleserver  the oracle's transport. echo lives in these two and nowhere else
+internal/app           the use cases, and the ports they reach the world through
+internal/domain        what a contract is and what may follow what. No I/O
+internal/oracle        the publisher and its storage port. No HTTP, no SQL
+internal/postgres      storage adapter: the pool, the repositories, the migrations
+internal/arkadeadapter the live stack, behind the use cases' port
+internal/oracleclient  the oracle, over HTTP
+internal/signer        signing on a party's behalf — the demo's whole custody story
+internal/wallets       one Arkade wallet per demo user
+internal/events        contract transitions, fanned out to whoever is watching
+internal/config        the environment, read once at startup into typed values
+frontend               Vite + React + TypeScript, Tailwind v4
 ```
 
-The domain package joins them when the first contract use case arrives. There is no empty
-interface waiting for it: a port with no methods documents nothing.
+## Where the demo ends and the service begins
 
-`GET /` is the demo endpoint the generated frontend's "Fetch from Server" button calls. It goes
-when there is something real to serve.
+`internal/signer` and `internal/wallets` are the only packages that ever see a party's private key,
+and they are the only ones with no place in the service that ships. The coordinator holds the
+oracle's key and its own third of the 2-of-3, and never a party's.
+
+Nothing above them changes when the wallets move to the user's own device. Every signature already
+goes through `app.Signer`, whose methods take a user and return bytes — no private key crosses that
+line in either direction. It is also why the service never calls `contract.PreSignExit`, which
+wants both parties' keys in one call: the exit is composed from one deterministic `ExitTx` and two
+independent `SignExit` calls that may arrive minutes apart.
+
+## Long steps
+
+Funding and settling take tens of seconds against a live stack — a faucet payment to confirm, a
+batch to close, an emulator to run a script — which is longer than a request should hold and longer
+than a process is guaranteed to live. So a request moves the contract into a transient state and
+stops, and `app.Worker` carries it the rest of the way, from the row alone, restart or no restart.
+
+Every step is safe to repeat, and anything irreversible is written before the next thing that might
+fail: the funding outpoint is persisted the moment the operator has the transaction, because a
+retry that started from a row which never heard about it would spend both parties' collateral
+twice.
 
 ## The oracle
 
@@ -59,7 +84,12 @@ that a `BIGSERIAL` fails.
 | | `just test-service` | `just test-service-integration` |
 |---|---|---|
 | Needs | nothing | Docker |
-| Covers | config, routes, handlers | the driver and the connection string against a real postgres |
+| Covers | domain, use cases, every endpoint, the event stream | the repositories and the oracle's storage against a real postgres |
 
 The second tier is behind the `integration` build tag and starts its own throwaway postgres with
 testcontainers, so it needs no stack to be up first.
+
+The stubs behind the use cases live in `internal/apptest` rather than in one suite's test files,
+because two suites need them: the use cases' own, and the HTTP layer's, which drives requests
+through a real `App` so the status codes are the ones a real outcome produces. They hold real keys
+and sign for real, so an exit signature is verified in a test the way it will be in production.

@@ -17,7 +17,7 @@ import (
 func (a *App) CreateUser(ctx context.Context, name string) (domain.User, error) {
 	clean, err := domain.ValidateName(name)
 	if err != nil {
-		return domain.User{}, err
+		return domain.User{}, invalid("%v", err)
 	}
 
 	seed, err := btcec.NewPrivateKey()
@@ -74,7 +74,7 @@ func (a *App) Wallet(ctx context.Context, user uuid.UUID) (Wallet, error) {
 // is a spendable VTXO.
 func (a *App) TopUp(ctx context.Context, user uuid.UUID, sats int64) error {
 	if sats <= 0 {
-		return fmt.Errorf("an amount must be positive, got %d", sats)
+		return invalid("an amount must be positive, got %d", sats)
 	}
 	return a.stack.TopUp(ctx, user, sats)
 }

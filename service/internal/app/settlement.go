@@ -129,7 +129,7 @@ func (a *App) PriceHistory(ctx context.Context, limit int) ([]domain.Price, erro
 // started with manual publication on.
 func (a *App) SetPrice(ctx context.Context, price int64) error {
 	if price <= 0 {
-		return fmt.Errorf("a price must be positive, got %d", price)
+		return invalid("a price must be positive, got %d", price)
 	}
 	return a.feed.SetPrice(ctx, price)
 }

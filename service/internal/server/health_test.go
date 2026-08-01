@@ -1,21 +1,12 @@
 package server
 
 import (
-	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/arejula27/hedge/service/internal/postgres"
 )
-
-// stubProber stands in for the connection pool, which is the whole reason the
-// handler takes an interface: a health check must be testable without a
-// database, and the case worth testing is the one where there isn't one.
-type stubProber struct{ health postgres.Health }
-
-func (s stubProber) Check(context.Context) postgres.Health { return s.health }
 
 func TestHealthReportsOkWhenTheDatabaseAnswers(t *testing.T) {
 	rec := get(t, stubProber{postgres.Health{Up: true, OpenConnections: 3}}, "/health")
@@ -72,14 +63,6 @@ func get(t *testing.T, db prober, path string) *httptest.ResponseRecorder {
 	t.Helper()
 
 	rec := httptest.NewRecorder()
-	(&Server{db: db}).Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	(&Server{db: db}).Routes("").ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 	return rec
-}
-
-func decode(t *testing.T, rec *httptest.ResponseRecorder, into any) {
-	t.Helper()
-
-	if err := json.NewDecoder(rec.Body).Decode(into); err != nil {
-		t.Fatalf("decoding the response: %v", err)
-	}
 }

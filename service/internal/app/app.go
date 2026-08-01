@@ -12,6 +12,11 @@ import (
 // make: accepting their own proposal, funding someone else's contract.
 var ErrNotAllowed = errors.New("not allowed")
 
+// ErrInvalid is a request that cannot be satisfied as stated: terms that do not
+// add up, a name that is empty. It is the caller's to fix, which is what
+// separates it from everything else that goes wrong.
+var ErrInvalid = errors.New("invalid")
+
 // ErrNotYet is a step the contract is not ready for — settling one whose price
 // is neither out of bounds nor matured. It is not a failure, it is a "come
 // back later", and the reason travels with it.
@@ -51,12 +56,22 @@ type Options struct {
 
 	ServiceKey  *btcec.PublicKey
 	ExitFeeSats int64
+
+	// Now is the clock. It is a dependency like any other: a contract's start
+	// and maturity are written from it, and a test that cannot control it
+	// cannot check what it wrote.
+	Now func() time.Time
 }
 
 func New(o Options) *App {
 	fee := o.ExitFeeSats
 	if fee <= 0 {
 		fee = 2_000
+	}
+
+	now := o.Now
+	if now == nil {
+		now = time.Now
 	}
 
 	return &App{
@@ -70,7 +85,7 @@ func New(o Options) *App {
 		serviceKey: o.ServiceKey,
 
 		exitFeeSats: fee,
-		now:         time.Now,
+		now:         now,
 	}
 }
 
@@ -80,4 +95,8 @@ func (a *App) Stack() Stack { return a.stack.Stack() }
 
 func notYet(format string, args ...any) error {
 	return ErrNotYet{Reason: fmt.Sprintf(format, args...)}
+}
+
+func invalid(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, args...))
 }

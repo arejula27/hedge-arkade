@@ -31,17 +31,17 @@ type Proposal struct {
 func (p Proposal) validate() error {
 	switch {
 	case !p.Side.Valid():
-		return fmt.Errorf("side must be short or long, got %q", p.Side)
+		return invalid("side must be short or long, got %q", p.Side)
 	case p.HedgeValueCents <= 0:
-		return fmt.Errorf("the hedge value must be positive")
+		return invalid("the hedge value must be positive")
 	case p.PayoutSats < 2*contract.Dust:
-		return fmt.Errorf("the payout must be at least %d sats, so both sides clear dust", 2*contract.Dust)
+		return invalid("the payout must be at least %d sats, so both sides clear dust", 2*contract.Dust)
 	case p.LowLiquidationCents <= 0:
-		return fmt.Errorf("the low liquidation price must be positive")
+		return invalid("the low liquidation price must be positive")
 	case p.HighLiquidationCents <= p.LowLiquidationCents:
-		return fmt.Errorf("the high liquidation price must be above the low one")
+		return invalid("the high liquidation price must be above the low one")
 	case p.MaturityIn <= 0:
-		return fmt.Errorf("maturity must be in the future")
+		return invalid("maturity must be in the future")
 	}
 	return nil
 }
@@ -180,7 +180,7 @@ func (a *App) Accept(ctx context.Context, id, acceptor uuid.UUID) (*domain.Contr
 	// the funding transaction is refused.
 	stack := a.stack.Stack()
 	if err := covenant.Validate(stack.ExitDelay, stack.AllowsBlockTimelocks); err != nil {
-		return nil, fmt.Errorf("the operator would refuse this contract: %w", err)
+		return nil, invalid("the operator would refuse this contract: %v", err)
 	}
 
 	if c.PkScript, err = covenant.PkScript(); err != nil {

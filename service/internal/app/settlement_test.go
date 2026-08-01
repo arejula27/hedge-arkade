@@ -1,10 +1,12 @@
-package app
+package app_test
 
 import (
 	"errors"
 	"testing"
 	"time"
 
+	"github.com/arejula27/hedge/service/internal/app"
+	"github.com/arejula27/hedge/service/internal/apptest"
 	"github.com/arejula27/hedge/service/internal/domain"
 )
 
@@ -12,21 +14,21 @@ import (
 // come has nothing to settle, and saying so here is what turns a script failure
 // nobody can read into a sentence.
 func TestSettleRefusesAContractWithNothingToSettle(t *testing.T) {
-	f := newFixture(t)
-	c := f.funded(t)
+	f := apptest.New(t)
+	c := f.Funded(t)
 
-	_, err := f.app.Settle(t.Context(), c.ID)
+	_, err := f.App.Settle(t.Context(), c.ID)
 
-	var notReady ErrNotYet
+	var notReady app.ErrNotYet
 	if !errors.As(err, &notReady) {
 		t.Fatalf("Settle gave %v, want a not-yet", err)
 	}
 
-	c, _ = f.app.Contract(t.Context(), c.ID)
+	c, _ = f.App.Contract(t.Context(), c.ID)
 	if c.State != domain.Active {
 		t.Errorf("the contract moved to %s anyway", c.State)
 	}
-	if f.stack.settled != nil {
+	if f.StackStub.Settled != nil {
 		t.Error("something was submitted")
 	}
 }
@@ -44,16 +46,16 @@ func TestSettleTriggersOnEitherBoundary(t *testing.T) {
 		{"well above it", 90_000_000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newFixture(t)
-			c := f.funded(t)
+			f := apptest.New(t)
+			c := f.Funded(t)
 
-			f.feed.price = tc.price
+			f.FeedStub.CurrentPrice = tc.price
 
-			if _, err := f.app.Settle(t.Context(), c.ID); err != nil {
+			if _, err := f.App.Settle(t.Context(), c.ID); err != nil {
 				t.Fatalf("Settle: %v", err)
 			}
 
-			c, _ = f.app.Contract(t.Context(), c.ID)
+			c, _ = f.App.Contract(t.Context(), c.ID)
 			if c.State != domain.Settling {
 				t.Fatalf("state %s, want settling", c.State)
 			}
@@ -63,16 +65,16 @@ func TestSettleTriggersOnEitherBoundary(t *testing.T) {
 
 // The other trigger: maturity, with the price still inside the boundaries.
 func TestSettleTriggersAtMaturity(t *testing.T) {
-	f := newFixture(t)
-	c := f.funded(t)
+	f := apptest.New(t)
+	c := f.Funded(t)
 
-	f.feed.at = c.Terms.MaturityTimestamp
+	f.FeedStub.At = c.Terms.MaturityTimestamp
 
-	if _, err := f.app.Settle(t.Context(), c.ID); err != nil {
+	if _, err := f.App.Settle(t.Context(), c.ID); err != nil {
 		t.Fatalf("Settle: %v", err)
 	}
 
-	c, _ = f.app.Contract(t.Context(), c.ID)
+	c, _ = f.App.Contract(t.Context(), c.ID)
 	if c.State != domain.Settling {
 		t.Errorf("state %s, want settling", c.State)
 	}
@@ -81,23 +83,23 @@ func TestSettleTriggersAtMaturity(t *testing.T) {
 // The whole base flow: two parties fund, the price crosses a boundary, and the
 // contract settles into the split the covenant's own formula gives.
 func TestTheWorkerSettlesAtTheClampedPrice(t *testing.T) {
-	f := newFixture(t)
-	c := f.funded(t)
+	f := apptest.New(t)
+	c := f.Funded(t)
 
 	// A crash to $50,000, the low boundary: the short is made whole and the
 	// long takes the loss.
-	f.feed.price = 5_000_000
+	f.FeedStub.CurrentPrice = 5_000_000
 
-	if _, err := f.app.Settle(t.Context(), c.ID); err != nil {
+	if _, err := f.App.Settle(t.Context(), c.ID); err != nil {
 		t.Fatalf("Settle: %v", err)
 	}
-	NewWorker(f.app, WorkerOptions{}).Tick(t.Context())
+	app.NewWorker(f.App, app.WorkerOptions{}).Tick(t.Context())
 
-	c, _ = f.app.Contract(t.Context(), c.ID)
+	c, _ = f.App.Contract(t.Context(), c.ID)
 	if c.State != domain.Settled {
 		t.Fatalf("state %s, want settled", c.State)
 	}
-	if f.stack.settled == nil {
+	if f.StackStub.Settled == nil {
 		t.Fatal("nothing was submitted")
 	}
 
@@ -105,8 +107,8 @@ func TestTheWorkerSettlesAtTheClampedPrice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Split: %v", err)
 	}
-	if f.stack.settleAt != [2]int64{short, long} {
-		t.Errorf("settled at %v, want the formula's %d/%d", f.stack.settleAt, short, long)
+	if f.StackStub.SettleAt != [2]int64{short, long} {
+		t.Errorf("settled at %v, want the formula's %d/%d", f.StackStub.SettleAt, short, long)
 	}
 	if short+long != c.Terms.PayoutSats {
 		t.Errorf("the payouts do not add up to %d", c.Terms.PayoutSats)
@@ -124,15 +126,15 @@ func TestSettlingIsTheSameOnAndPastTheBoundary(t *testing.T) {
 	var paid [2][2]int64
 
 	for i, price := range []int64{5_000_000, 1_000_000} {
-		f := newFixture(t)
-		c := f.funded(t)
-		f.feed.price = price
+		f := apptest.New(t)
+		c := f.Funded(t)
+		f.FeedStub.CurrentPrice = price
 
-		if _, err := f.app.Settle(t.Context(), c.ID); err != nil {
+		if _, err := f.App.Settle(t.Context(), c.ID); err != nil {
 			t.Fatalf("Settle: %v", err)
 		}
-		NewWorker(f.app, WorkerOptions{}).Tick(t.Context())
-		paid[i] = f.stack.settleAt
+		app.NewWorker(f.App, app.WorkerOptions{}).Tick(t.Context())
+		paid[i] = f.StackStub.SettleAt
 	}
 
 	if paid[0] != paid[1] {
@@ -143,55 +145,55 @@ func TestSettlingIsTheSameOnAndPastTheBoundary(t *testing.T) {
 // The split is derived from the signed bytes the covenant will check, not from
 // whatever number the feed happened to report alongside them.
 func TestSettlingReadsThePriceOutOfTheSignedMessage(t *testing.T) {
-	f := newFixture(t)
-	c := f.funded(t)
+	f := apptest.New(t)
+	c := f.Funded(t)
 
-	f.feed.price = 5_000_000
-	if _, err := f.app.Settle(t.Context(), c.ID); err != nil {
+	f.FeedStub.CurrentPrice = 5_000_000
+	if _, err := f.App.Settle(t.Context(), c.ID); err != nil {
 		t.Fatalf("Settle: %v", err)
 	}
 
 	// The feed now claims a different price than the one it will sign for.
 	// What matters is the signed message, so the payouts must not move.
-	signedPrice := f.feed.price
-	f.feed.lies = 19_000_000
+	signedPrice := f.FeedStub.CurrentPrice
+	f.FeedStub.Lies = 19_000_000
 
-	NewWorker(f.app, WorkerOptions{}).Tick(t.Context())
+	app.NewWorker(f.App, app.WorkerOptions{}).Tick(t.Context())
 
 	short, long, err := c.Split(signedPrice)
 	if err != nil {
 		t.Fatalf("Split: %v", err)
 	}
-	if f.stack.settleAt != [2]int64{short, long} {
+	if f.StackStub.SettleAt != [2]int64{short, long} {
 		t.Errorf("settled at %v, want %d/%d from the signed message",
-			f.stack.settleAt, short, long)
+			f.StackStub.SettleAt, short, long)
 	}
 }
 
 // A settlement the emulator refuses leaves the contract exactly as it was:
 // still funded, still settleable, and still worth retrying.
 func TestASettlementThatFailsIsRetried(t *testing.T) {
-	f := newFixture(t)
-	c := f.funded(t)
+	f := apptest.New(t)
+	c := f.Funded(t)
 
-	f.feed.price = 5_000_000
-	if _, err := f.app.Settle(t.Context(), c.ID); err != nil {
+	f.FeedStub.CurrentPrice = 5_000_000
+	if _, err := f.App.Settle(t.Context(), c.ID); err != nil {
 		t.Fatalf("Settle: %v", err)
 	}
 
-	f.stack.settleErr = errors.New("the emulator is not answering")
-	worker := NewWorker(f.app, WorkerOptions{})
+	f.StackStub.SettleErr = errors.New("the emulator is not answering")
+	worker := app.NewWorker(f.App, app.WorkerOptions{})
 	worker.Tick(t.Context())
 
-	c, _ = f.app.Contract(t.Context(), c.ID)
+	c, _ = f.App.Contract(t.Context(), c.ID)
 	if c.State != domain.Settling {
 		t.Fatalf("state %s, want settling", c.State)
 	}
 
-	f.stack.settleErr = nil
+	f.StackStub.SettleErr = nil
 	worker.Tick(t.Context())
 
-	c, _ = f.app.Contract(t.Context(), c.ID)
+	c, _ = f.App.Contract(t.Context(), c.ID)
 	if c.State != domain.Settled {
 		t.Fatalf("state %s, want settled after the retry", c.State)
 	}
@@ -203,59 +205,59 @@ func TestASettlementThatFailsIsRetried(t *testing.T) {
 func TestTheWorkerGivesUpOnAStepThatWillNeverFinish(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
-		start func(*fixture, *domain.Contract)
+		start func(*apptest.Fixture, *domain.Contract)
 		from  domain.State
 		to    domain.State
 	}{
 		{
 			name: "funding that can never succeed",
-			start: func(f *fixture, c *domain.Contract) {
-				f.stack.fundErr = errors.New("the operator refuses")
+			start: func(f *apptest.Fixture, c *domain.Contract) {
+				f.StackStub.FundErr = errors.New("the operator refuses")
 			},
 			from: domain.Funding,
 			to:   domain.Failed,
 		},
 		{
 			name: "settling that can never succeed",
-			start: func(f *fixture, c *domain.Contract) {
-				f.stack.settleErr = errors.New("the emulator refuses")
+			start: func(f *apptest.Fixture, c *domain.Contract) {
+				f.StackStub.SettleErr = errors.New("the emulator refuses")
 			},
 			from: domain.Settling,
 			to:   domain.Active,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newFixture(t)
+			f := apptest.New(t)
 
 			var c *domain.Contract
 			if tc.from == domain.Funding {
-				c = f.accepted(t)
+				c = f.Accepted(t)
 				tc.start(f, c)
-				if _, err := f.app.Fund(t.Context(), c.ID, f.alice); err != nil {
+				if _, err := f.App.Fund(t.Context(), c.ID, f.Alice); err != nil {
 					t.Fatalf("Fund: %v", err)
 				}
 			} else {
-				c = f.funded(t)
+				c = f.Funded(t)
 				tc.start(f, c)
-				f.feed.price = 5_000_000
-				if _, err := f.app.Settle(t.Context(), c.ID); err != nil {
+				f.FeedStub.CurrentPrice = 5_000_000
+				if _, err := f.App.Settle(t.Context(), c.ID); err != nil {
 					t.Fatalf("Settle: %v", err)
 				}
 			}
 
-			worker := NewWorker(f.app, WorkerOptions{GiveUpAfter: 10 * time.Minute})
+			worker := app.NewWorker(f.App, app.WorkerOptions{GiveUpAfter: 10 * time.Minute})
 			worker.Tick(t.Context())
 
-			got, _ := f.app.Contract(t.Context(), c.ID)
+			got, _ := f.App.Contract(t.Context(), c.ID)
 			if got.State != tc.from {
 				t.Fatalf("state %s, want %s while it is still worth retrying", got.State, tc.from)
 			}
 
 			// Long enough that retrying is no longer worth it.
-			f.now = f.now.Add(11 * time.Minute)
+			f.Now = f.Now.Add(11 * time.Minute)
 			worker.Tick(t.Context())
 
-			got, _ = f.app.Contract(t.Context(), c.ID)
+			got, _ = f.App.Contract(t.Context(), c.ID)
 			if got.State != tc.to {
 				t.Errorf("state %s, want %s", got.State, tc.to)
 			}
@@ -266,13 +268,13 @@ func TestTheWorkerGivesUpOnAStepThatWillNeverFinish(t *testing.T) {
 // Projection is what the UI shows while a contract is alive, and it comes from
 // the covenant's own formula rather than from a second implementation of it.
 func TestProjectionMatchesTheFormula(t *testing.T) {
-	f := newFixture(t)
-	c := f.funded(t)
+	f := apptest.New(t)
+	c := f.Funded(t)
 
 	for _, price := range []int64{5_000_000, 8_000_000, 10_000_000, 15_000_000, 20_000_000} {
-		f.feed.price = price
+		f.FeedStub.CurrentPrice = price
 
-		got, err := f.app.Project(t.Context(), c)
+		got, err := f.App.Project(t.Context(), c)
 		if err != nil {
 			t.Fatalf("Project at %d: %v", price, err)
 		}
@@ -292,14 +294,14 @@ func TestProjectionMatchesTheFormula(t *testing.T) {
 }
 
 func TestSetPriceRefusesWhatCannotBeAPrice(t *testing.T) {
-	f := newFixture(t)
+	f := apptest.New(t)
 
 	for _, price := range []int64{0, -1} {
-		if err := f.app.SetPrice(t.Context(), price); err == nil {
+		if err := f.App.SetPrice(t.Context(), price); err == nil {
 			t.Errorf("SetPrice(%d) was accepted", price)
 		}
 	}
-	if len(f.feed.set) != 0 {
+	if len(f.FeedStub.Set) != 0 {
 		t.Error("a refused price reached the oracle")
 	}
 }

@@ -510,3 +510,51 @@ func TestLostRecognisesBothWaysOfLosing(t *testing.T) {
 		})
 	}
 }
+
+// A contract on offer is half a contract: only the creator's payout script and
+// key are known, and the address is a function of both sides, so it does not
+// exist yet either. The schema has to hold that shape.
+func TestAContractOnOfferRoundTrips(t *testing.T) {
+	users, contracts := repos(t)
+	alice := newUser(t, users, "alice")
+
+	proposed := newContract(t, &alice.ID, nil)
+	proposed.Terms.LongLockScript = nil
+	proposed.LongKey = nil
+	proposed.PkScript = nil
+	// Until someone accepts, the creator holds the whole payout.
+	proposed.ShortStake, proposed.LongStake = proposed.Terms.PayoutSats, 0
+
+	if err := contracts.Create(t.Context(), proposed); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := contracts.Get(t.Context(), proposed.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.Terms.LongLockScript) != 0 || len(got.LongKey) != 0 || len(got.PkScript) != 0 {
+		t.Error("the empty halves came back as something")
+	}
+	if !got.Open() {
+		t.Error("the contract does not read as still on offer")
+	}
+
+	// And filling them in works, which is what accepting does.
+	got.Terms.LongLockScript = []byte{0x51, 0x20, 0xbb}
+	got.LongKey = bytes.Repeat([]byte{0x22}, 33)
+	got.PkScript = []byte{0x51, 0x20, 0xcc}
+	got.ShortStake, got.LongStake = 10_000_000, 10_000_000
+
+	if err := contracts.Advance(t.Context(), got, domain.Accepted, ""); err != nil {
+		t.Fatalf("Advance: %v", err)
+	}
+
+	accepted, err := contracts.Get(t.Context(), proposed.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(accepted.PkScript) == 0 || len(accepted.LongKey) == 0 {
+		t.Error("accepting did not fill in the other side")
+	}
+}
