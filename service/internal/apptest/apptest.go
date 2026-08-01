@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/arejula27/hedge/arkade"
+	arkadeclient "github.com/arejula27/hedge/arkade"
 	"github.com/arejula27/hedge/contract"
 	"github.com/arejula27/hedge/service/internal/app"
 	"github.com/arejula27/hedge/service/internal/domain"
@@ -190,6 +190,37 @@ func (s *Contracts) Events(_ context.Context, id uuid.UUID) ([]domain.Event, err
 	return s.Recorded[id], nil
 }
 
+// Redemptions is the one open early close a contract may have.
+type Redemptions struct {
+	Stored map[uuid.UUID]domain.Redemption
+	Fail   error
+}
+
+func NewRedemptions() *Redemptions {
+	return &Redemptions{Stored: map[uuid.UUID]domain.Redemption{}}
+}
+
+func (s *Redemptions) Put(_ context.Context, r *domain.Redemption) error {
+	if s.Fail != nil {
+		return s.Fail
+	}
+	s.Stored[r.ContractID] = *r
+	return nil
+}
+
+func (s *Redemptions) ForContract(_ context.Context, contract uuid.UUID) (*domain.Redemption, error) {
+	r, ok := s.Stored[contract]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	return &r, nil
+}
+
+func (s *Redemptions) Drop(_ context.Context, contract uuid.UUID) error {
+	delete(s.Stored, contract)
+	return nil
+}
+
 type Exits struct {
 	Stored map[uuid.UUID]domain.ExitPackage
 	Fail   error
@@ -219,8 +250,10 @@ func (s *Exits) Get(_ context.Context, id uuid.UUID) (domain.ExitPackage, error)
 type Signer struct {
 	Keys      map[uuid.UUID]*btcec.PrivateKey
 	FailExit  error
+	FailLeaf  error
 	WrongKey  *btcec.PrivateKey
 	SignCalls int
+	LeafCalls int
 }
 
 func NewSigner() *Signer {
@@ -240,6 +273,18 @@ func (s *Signer) PublicKey(_ context.Context, user uuid.UUID) (*btcec.PublicKey,
 func (s *Signer) SignPacket(_ context.Context, _ uuid.UUID, packetB64 string) (string, error) {
 	s.SignCalls++
 	return packetB64, nil
+}
+
+// SignLeaf tags the packet rather than signing it for real. What a leaf
+// signature actually covers needs a live stack to build, and internal/livetest
+// is where that is checked; what matters here is that both parties' keys reach
+// every packet.
+func (s *Signer) SignLeaf(_ context.Context, user uuid.UUID, packetB64 string) (string, error) {
+	if s.FailLeaf != nil {
+		return "", s.FailLeaf
+	}
+	s.LeafCalls++
+	return packetB64 + "|" + user.String(), nil
 }
 
 func (s *Signer) SignExit(
@@ -284,6 +329,12 @@ type Arkade struct {
 	SettleAt  [2]int64
 	SettleErr error
 	TopUps    map[uuid.UUID]int64
+
+	BuiltSplit      [2]int64
+	RedeemErr       error
+	Redeemed        *domain.Redemption
+	RedeemedFinal   []string
+	SubmitRedeemErr error
 }
 
 func NewArkade() *Arkade {
@@ -356,6 +407,41 @@ func (s *Arkade) Settle(_ context.Context, c *domain.Contract, short, long int64
 	return nil
 }
 
+func (s *Arkade) BuildRedemption(
+	_ context.Context, _ *domain.Contract, short, long int64,
+) (string, []string, error) {
+	if s.RedeemErr != nil {
+		return "", nil, s.RedeemErr
+	}
+	s.BuiltSplit = [2]int64{short, long}
+	return "arktx", []string{"checkpoint"}, nil
+}
+
+func (s *Arkade) SubmitRedemption(
+	ctx context.Context, _ *domain.Contract, r *domain.Redemption, sign []arkadeclient.Signer,
+) error {
+	if s.SubmitRedeemErr != nil {
+		return s.SubmitRedeemErr
+	}
+
+	// The operator asks for the contract keys again on the checkpoints it hands
+	// back, so a caller that forgot them would fail there and nowhere else.
+	final := r.Checkpoints
+	for _, signer := range sign {
+		for i, checkpoint := range final {
+			signed, err := signer(ctx, checkpoint)
+			if err != nil {
+				return err
+			}
+			final[i] = signed
+		}
+	}
+
+	s.Redeemed = r
+	s.RedeemedFinal = final
+	return nil
+}
+
 // Feed is a real oracle key signing real messages, so a contract built
 // against it can verify what comes back.
 type Feed struct {
@@ -405,13 +491,13 @@ func (s *Feed) Pair(context.Context) (app.Pair, error) {
 	}, nil
 }
 
-func (s *Feed) sign(sequence uint64, at, price int64) arkade.SignedPrice {
+func (s *Feed) sign(sequence uint64, at, price int64) arkadeclient.SignedPrice {
 	message := contract.OracleMessage(uint64(at), sequence, uint64(price))
 	signature, err := contract.SignOracleMessage(s.SigningKey, message)
 	if err != nil {
 		panic(err)
 	}
-	return arkade.SignedPrice{Message: message, Signature: signature}
+	return arkadeclient.SignedPrice{Message: message, Signature: signature}
 }
 
 func (s *Feed) SetPrice(_ context.Context, price int64) error {
@@ -438,13 +524,14 @@ var FixedNow = time.Unix(1_800_000_000, 0)
 
 // Fixture is the whole app with stubs behind it, plus two users who have money.
 type Fixture struct {
-	App           *app.App
-	UserStore     *Users
-	ContractStore *Contracts
-	ExitStore     *Exits
-	SignerStub    *Signer
-	StackStub     *Arkade
-	FeedStub      *Feed
+	App             *app.App
+	UserStore       *Users
+	ContractStore   *Contracts
+	ExitStore       *Exits
+	RedemptionStore *Redemptions
+	SignerStub      *Signer
+	StackStub       *Arkade
+	FeedStub        *Feed
 
 	Alice, Bob uuid.UUID
 
@@ -471,6 +558,7 @@ func New(t *testing.T) *Fixture {
 	f.UserStore = NewUsers()
 	f.ContractStore = NewContracts(clock)
 	f.ExitStore = NewExits()
+	f.RedemptionStore = NewRedemptions()
 	f.SignerStub = NewSigner()
 	f.StackStub = NewArkade()
 	f.FeedStub = NewFeed(10_000_000)
@@ -493,12 +581,13 @@ func New(t *testing.T) *Fixture {
 // because Advance is the only way a contract moves.
 func (f *Fixture) Options(contracts app.Contracts) app.Options {
 	return app.Options{
-		Users:     f.UserStore,
-		Contracts: contracts,
-		Exits:     f.ExitStore,
-		Signer:    f.SignerStub,
-		Stack:     f.StackStub,
-		Feed:      f.FeedStub,
+		Users:       f.UserStore,
+		Contracts:   contracts,
+		Exits:       f.ExitStore,
+		Redemptions: f.RedemptionStore,
+		Signer:      f.SignerStub,
+		Stack:       f.StackStub,
+		Feed:        f.FeedStub,
 
 		ServiceKey:  f.ServiceKey,
 		ExitFeeSats: 2_000,

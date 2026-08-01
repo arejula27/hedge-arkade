@@ -545,3 +545,125 @@ func TestDemoStack(t *testing.T) {
 		t.Error("the exit delay is zero")
 	}
 }
+
+// --- Closing early ----------------------------------------------------------
+
+func (h *harness) active(t *testing.T) contractResponse {
+	t.Helper()
+	return h.funded(t)
+}
+
+func TestProposeAnEarlyClose(t *testing.T) {
+	h := newHarness(t)
+	c := h.active(t)
+
+	rec := h.post(t, "/api/contracts/"+c.ID+"/redemption", `{}`, h.Alice)
+	requireStatus(t, rec, http.StatusCreated)
+
+	var proposal redemptionResponse
+	decode(t, rec, &proposal)
+
+	if proposal.ShortSats+proposal.LongSats != c.Terms.PayoutSats {
+		t.Errorf("the split %d/%d does not add up to %d",
+			proposal.ShortSats, proposal.LongSats, c.Terms.PayoutSats)
+	}
+	if !proposal.ShortSigned || proposal.LongSigned {
+		t.Errorf("signatures: short %v, long %v — the proposer signs and nobody else",
+			proposal.ShortSigned, proposal.LongSigned)
+	}
+	// The evidence travels so the other party can check the numbers against the
+	// same bytes rather than against a promise.
+	if proposal.Message == "" || proposal.Signature == "" || proposal.Price == 0 {
+		t.Error("a close at the oracle's price carries no evidence")
+	}
+
+	// And the contract page can see it.
+	rec = h.get(t, "/api/contracts/"+c.ID, uuid.Nil)
+	requireStatus(t, rec, http.StatusOK)
+
+	var withProposal contractResponse
+	decode(t, rec, &withProposal)
+	if withProposal.Redemption == nil {
+		t.Error("the contract does not carry its open proposal")
+	}
+	if withProposal.State != string(domain.RedemptionProposed) {
+		t.Errorf("state %q", withProposal.State)
+	}
+}
+
+func TestProposeAnEarlyCloseRefusals(t *testing.T) {
+	h := newHarness(t)
+	carol := h.AddUser(t, "carol", 0x25)
+	c := h.active(t)
+
+	for _, tc := range []struct {
+		name string
+		body string
+		as   uuid.UUID
+		want int
+	}{
+		{"a stranger", `{}`, carol, http.StatusForbidden},
+		{"a split that does not add up", `{"short_sats":1,"long_sats":1}`, h.Alice, http.StatusBadRequest},
+		{"a side below dust", `{"short_sats":19999900,"long_sats":100}`, h.Alice, http.StatusBadRequest},
+		{"not json", `nonsense`, h.Alice, http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := h.post(t, "/api/contracts/"+c.ID+"/redemption", tc.body, tc.as)
+			requireStatus(t, rec, tc.want)
+		})
+	}
+}
+
+func TestSignAnEarlyClose(t *testing.T) {
+	h := newHarness(t)
+	c := h.active(t)
+
+	requireStatus(t, h.post(t, "/api/contracts/"+c.ID+"/redemption", `{}`, h.Alice),
+		http.StatusCreated)
+
+	rec := h.post(t, "/api/contracts/"+c.ID+"/redemption/sign", "", h.Bob)
+	requireStatus(t, rec, http.StatusOK)
+
+	var proposal redemptionResponse
+	decode(t, rec, &proposal)
+	if !proposal.ShortSigned || !proposal.LongSigned {
+		t.Error("both signed and the proposal does not say so")
+	}
+
+	rec = h.get(t, "/api/contracts/"+c.ID, uuid.Nil)
+	var closing contractResponse
+	decode(t, rec, &closing)
+	if closing.State != string(domain.Redeeming) {
+		t.Errorf("state %q, want redeeming", closing.State)
+	}
+}
+
+func TestRejectAnEarlyClose(t *testing.T) {
+	h := newHarness(t)
+	c := h.active(t)
+
+	requireStatus(t, h.post(t, "/api/contracts/"+c.ID+"/redemption", `{}`, h.Alice),
+		http.StatusCreated)
+
+	rec := h.post(t, "/api/contracts/"+c.ID+"/redemption/reject", "", h.Bob)
+	requireStatus(t, rec, http.StatusOK)
+
+	var back contractResponse
+	decode(t, rec, &back)
+	if back.State != string(domain.Active) {
+		t.Errorf("state %q, want active", back.State)
+	}
+
+	requireStatus(t, h.get(t, "/api/contracts/"+c.ID+"/redemption", uuid.Nil),
+		http.StatusNotFound)
+}
+
+func TestAnEarlyCloseThatIsNotThere(t *testing.T) {
+	h := newHarness(t)
+	c := h.active(t)
+
+	requireStatus(t, h.get(t, "/api/contracts/"+c.ID+"/redemption", uuid.Nil),
+		http.StatusNotFound)
+	requireStatus(t, h.post(t, "/api/contracts/"+c.ID+"/redemption/sign", "", h.Bob),
+		http.StatusConflict)
+}

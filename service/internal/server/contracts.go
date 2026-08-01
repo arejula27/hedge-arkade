@@ -88,6 +88,7 @@ type contractResponse struct {
 	ExitReady bool              `json:"exit_ready"`
 
 	Projection *projectionResponse `json:"projection,omitempty"`
+	Redemption *redemptionResponse `json:"redemption,omitempty"`
 	Events     []eventResponse     `json:"events,omitempty"`
 }
 
@@ -273,6 +274,13 @@ func (s *Server) showContract(c echo.Context) error {
 
 	if _, err := s.app.Exit(ctx, id); err == nil {
 		out.ExitReady = true
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return err
+	}
+
+	if proposal, err := s.app.Redemption(ctx, id); err == nil {
+		view := asRedemption(proposal)
+		out.Redemption = &view
 	} else if !errors.Is(err, domain.ErrNotFound) {
 		return err
 	}

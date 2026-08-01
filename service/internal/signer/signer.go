@@ -14,6 +14,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/arejula27/hedge/arkade"
+	"github.com/arejula27/hedge/contract"
 	"github.com/arejula27/hedge/service/internal/domain"
 	"github.com/arejula27/hedge/service/internal/wallets"
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -43,6 +45,34 @@ func (s *Server) SignPacket(ctx context.Context, user uuid.UUID, packetB64 strin
 		return "", err
 	}
 	return w.SignPacket(ctx, packetB64)
+}
+
+// SignLeaf signs the leaves of a packet that name the user's own contract key.
+//
+// This is a different key from the one SignPacket uses, doing a different job.
+// Leaf 2 carries the contract's own keys and no wallet holds them, so the
+// wallet cannot sign it and this has to reach for the raw key instead — which
+// is exactly the reach that goes away when the key lives on the user's device.
+func (s *Server) SignLeaf(ctx context.Context, user uuid.UUID, packetB64 string) (string, error) {
+	key, err := s.wallets.Key(ctx, user)
+	if err != nil {
+		return "", err
+	}
+
+	packet, err := arkade.Decode(packetB64)
+	if err != nil {
+		return "", err
+	}
+
+	if err := contract.SignTapscript(key, packet); err != nil {
+		return "", fmt.Errorf("signing the revealed leaves: %w", err)
+	}
+
+	signed, err := packet.B64Encode()
+	if err != nil {
+		return "", fmt.Errorf("encoding the signed packet: %w", err)
+	}
+	return signed, nil
 }
 
 // SignExit signs one side of the unilateral exit.

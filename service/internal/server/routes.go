@@ -50,6 +50,13 @@ func (s *Server) Routes(allowOrigin string) http.Handler {
 	// losing side to cooperate.
 	api.POST("/contracts/:id/settle", s.settle)
 
+	// Closing early is leaf 2: no oracle, no covenant, and the two signatures
+	// are the whole of the authority.
+	api.GET("/contracts/:id/redemption", s.showRedemption)
+	api.POST("/contracts/:id/redemption", s.proposeRedemption, s.identified)
+	api.POST("/contracts/:id/redemption/sign", s.signRedemption, s.identified)
+	api.POST("/contracts/:id/redemption/reject", s.rejectRedemption, s.identified)
+
 	// The oracle is proxied so the frontend has one origin, and so the UI never
 	// has to know it is a separate process.
 	api.GET("/oracle", s.oracle)

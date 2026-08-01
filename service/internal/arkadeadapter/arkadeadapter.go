@@ -142,6 +142,69 @@ func (a *Adapter) Settle(
 		[]arkade.Signer{shortWallet.Signer()})
 }
 
+// BuildRedemption is the early close through leaf 2, unsigned.
+//
+// It goes straight to the operator when it is submitted: the leaf carries no
+// tweaked emulator key, so the emulator has nothing to execute.
+func (a *Adapter) BuildRedemption(
+	ctx context.Context, c *domain.Contract, short, long int64,
+) (string, []string, error) {
+	covenant, err := c.Covenant()
+	if err != nil {
+		return "", nil, err
+	}
+
+	outpoint, err := outpointOf(c)
+	if err != nil {
+		return "", nil, err
+	}
+
+	proposal, err := covenant.ProposeRedemption(outpoint, short, long, a.stack.CheckpointTapscript)
+	if err != nil {
+		return "", nil, err
+	}
+
+	arkTx, err := proposal.ArkTx.B64Encode()
+	if err != nil {
+		return "", nil, fmt.Errorf("encoding the early close: %w", err)
+	}
+	checkpoints, err := arkade.Encode(proposal.Checkpoints)
+	if err != nil {
+		return "", nil, err
+	}
+	return arkTx, checkpoints, nil
+}
+
+// SubmitRedemption hands the signed close to the operator.
+//
+// Nothing signs on the way in: leaf 2 is a 3-of-3 of the two parties and the
+// operator, the parties' keys are already on the packets, and the operator adds
+// its own. `sign` is those same party keys again, for the checkpoints it hands
+// back — it re-verifies every key in the revealed leaf when it takes them
+// (`service.go:1236`).
+//
+// A party's wallet must *not* sign here, even though it is the transport. In
+// this demo the key a contract leaf carries is the same key the wallet holds,
+// so a wallet signature would be a second signature from a key that has already
+// signed — and a PSBT with the same key twice is one the operator refuses to
+// parse at all. When wallets move to the users' own devices the two keys come
+// apart and this stops being a hazard, but the wallet still has no business
+// signing a leaf it is not named in.
+func (a *Adapter) SubmitRedemption(
+	ctx context.Context, c *domain.Contract, r *domain.Redemption, sign []arkade.Signer,
+) error {
+	short, _, err := a.parties(ctx, c)
+	if err != nil {
+		return err
+	}
+
+	txid, err := arkade.SubmitSigned(ctx, short.Arkd(), r.ArkTx, r.Checkpoints, nil, sign)
+	if err != nil {
+		return err
+	}
+	return arkade.WaitForVtxo(ctx, short, txid)
+}
+
 func (a *Adapter) parties(ctx context.Context, c *domain.Contract) (*arkade.Wallet, *arkade.Wallet, error) {
 	if c.ShortUser == nil || c.LongUser == nil {
 		return nil, nil, fmt.Errorf("contract %s does not have both sides yet", c.ID)

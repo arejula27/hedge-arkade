@@ -82,6 +82,21 @@ export type State =
   | 'cancelled'
   | 'failed'
 
+// An early close through leaf 2. The evidence is there when the split came from
+// an oracle price, so the other party can check the numbers against the same
+// bytes rather than against a promise.
+export type Redemption = {
+  id: string
+  proposed_by: string
+  short_sats: number
+  long_sats: number
+  price?: number
+  message?: string
+  signature?: string
+  short_signed: boolean
+  long_signed: boolean
+}
+
 export type Contract = {
   id: string
   state: State
@@ -102,6 +117,7 @@ export type Contract = {
   exit_ready: boolean
 
   projection?: Projection
+  redemption?: Redemption
   events?: ContractEvent[]
 }
 

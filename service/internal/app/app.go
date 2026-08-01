@@ -26,12 +26,13 @@ func (e ErrNotYet) Error() string { return e.Reason }
 
 // App is the use cases. It is built once, at startup, from the adapters.
 type App struct {
-	users     Users
-	contracts Contracts
-	exits     Exits
-	signer    Signer
-	stack     Arkade
-	feed      Feed
+	users       Users
+	contracts   Contracts
+	exits       Exits
+	redemptions Redemptions
+	signer      Signer
+	stack       Arkade
+	feed        Feed
 
 	// serviceKey is the third key of the 2-of-3 a unilateral exit sweeps into.
 	// It is the service's own and legitimately lives here: the coordinator
@@ -47,12 +48,13 @@ type App struct {
 }
 
 type Options struct {
-	Users     Users
-	Contracts Contracts
-	Exits     Exits
-	Signer    Signer
-	Stack     Arkade
-	Feed      Feed
+	Users       Users
+	Contracts   Contracts
+	Exits       Exits
+	Redemptions Redemptions
+	Signer      Signer
+	Stack       Arkade
+	Feed        Feed
 
 	ServiceKey  *btcec.PublicKey
 	ExitFeeSats int64
@@ -75,12 +77,13 @@ func New(o Options) *App {
 	}
 
 	return &App{
-		users:     o.Users,
-		contracts: o.Contracts,
-		exits:     o.Exits,
-		signer:    o.Signer,
-		stack:     o.Stack,
-		feed:      o.Feed,
+		users:       o.Users,
+		contracts:   o.Contracts,
+		exits:       o.Exits,
+		redemptions: o.Redemptions,
+		signer:      o.Signer,
+		stack:       o.Stack,
+		feed:        o.Feed,
 
 		serviceKey: o.ServiceKey,
 

@@ -124,6 +124,53 @@ Go back to the **Lobby** in each tab and read *Spendable*.
 Alice is up 9,998,668 sats and Bob is down the same. Those are spendable VTXOs
 in their own Arkade wallets, not a number in our database.
 
+## The other way out: closing early
+
+The base flow ends with the covenant deciding. This one ends with the two of
+them deciding, and the covenant never running at all.
+
+Do steps 1 to 4 above — two people, a contract, funded, `active` — and then
+instead of touching the price:
+
+### 1. Alice proposes
+
+In **tab A**, on the contract page, find *Close it early* and press **Propose
+closing at the current price**.
+
+The panel changes: it shows the split, the oracle's signed message it was
+derived from, and two badges saying who has signed. Alice's says *signed* —
+nobody proposes a close they are not willing to sign, so the proposal carries
+her signature out of the door.
+
+### 2. Bob checks it, then signs
+
+In **tab B**, the same panel is there — the state changed under him without his
+touching anything.
+
+Press **Sign it**. Before the signature is added, the numbers are re-derived
+from the oracle message printed in the panel and compared. A party who signs
+without that check is trusting whoever proposed, which is the thing the design
+refuses to require.
+
+(To see the check bite, press **Reject** instead and propose an obviously
+lopsided split from the API — the panel's numbers stop matching the evidence and
+the signature is refused.)
+
+### 3. It closes
+
+State goes `redeeming` → `redeemed`. Back in the **Lobby**, the balances moved
+by the split the two of them agreed, which need not be — and in this leaf
+usually is not — what the covenant would have paid.
+
+Two things worth saying out loud while this happens:
+
+- **No oracle was needed.** The price is there as evidence for the two of them,
+  not as an input to anything. A split they simply agreed on works the same way
+  and carries nothing to check.
+- **It never touched the emulator.** Leaf 2 carries no tweaked emulator key, so
+  there is no script to run: the two signatures plus the operator's are the
+  whole of the authority, and it goes straight to arkd.
+
 ## Doing it again
 
 Run it a second time with the same two people and you will hit this: after a

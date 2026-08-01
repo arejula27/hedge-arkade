@@ -1,4 +1,4 @@
-import type { Contract, Price, Stack, User, Wallet } from './types'
+import type { Contract, Price, Redemption, Stack, User, Wallet } from './types'
 
 const base = import.meta.env.VITE_API ?? 'http://localhost:8080'
 
@@ -82,6 +82,11 @@ export const api = {
   cancel: (id: string) => post<Contract>(`/api/contracts/${id}/cancel`),
   fund: (id: string) => post<Contract>(`/api/contracts/${id}/fund`),
   settle: (id: string) => post<Contract>(`/api/contracts/${id}/settle`),
+
+  proposeRedemption: (id: string, split?: { short_sats: number; long_sats: number }) =>
+    post<Redemption>(`/api/contracts/${id}/redemption`, split ?? {}),
+  signRedemption: (id: string) => post<Redemption>(`/api/contracts/${id}/redemption/sign`),
+  rejectRedemption: (id: string) => post<Contract>(`/api/contracts/${id}/redemption/reject`),
 
   price: () => request<Price>('/api/oracle'),
   priceHistory: (limit = 60) => request<Price[]>(`/api/oracle/history?limit=${limit}`),

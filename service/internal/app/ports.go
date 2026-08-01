@@ -63,8 +63,25 @@ type Signer interface {
 	// leaves the rest alone.
 	SignPacket(ctx context.Context, user uuid.UUID, packetB64 string) (string, error)
 
+	// SignLeaf signs the leaves of a packet that name the user's own contract
+	// key, and nothing else.
+	//
+	// It is separate from SignPacket because they are different keys doing
+	// different jobs: a wallet signs the user's own VTXOs, and a contract leaf
+	// is not one of them. Leaf 2 carries the contract's keys and no wallet
+	// holds them.
+	SignLeaf(ctx context.Context, user uuid.UUID, packetB64 string) (string, error)
+
 	// SignExit signs one side of the pre-signed unilateral exit.
 	SignExit(ctx context.Context, user uuid.UUID, c *domain.Contract, exit *domain.Exit) ([]byte, error)
+}
+
+// Redemptions stores the one open early close a contract may have. Two would be
+// two transactions spending the same VTXO, and only one could win.
+type Redemptions interface {
+	Put(ctx context.Context, r *domain.Redemption) error
+	ForContract(ctx context.Context, contract uuid.UUID) (*domain.Redemption, error)
+	Drop(ctx context.Context, contract uuid.UUID) error
 }
 
 // Stack is what the operator and the emulator told us about themselves, read at
@@ -107,6 +124,15 @@ type Arkade interface {
 	// Settle spends the contract through the covenant, paying each side what
 	// the formula says at the oracle's price.
 	Settle(ctx context.Context, c *domain.Contract, short, long int64, pair Pair) error
+
+	// BuildRedemption is the early close through leaf 2, unsigned: the
+	// transaction and its checkpoints, base64, ready for the parties' keys.
+	BuildRedemption(ctx context.Context, c *domain.Contract, short, long int64) (arkTx string, checkpoints []string, err error)
+
+	// SubmitRedemption hands a fully signed early close to the operator. sign
+	// is the parties' contract keys, which the operator asks for again on the
+	// checkpoints it hands back.
+	SubmitRedemption(ctx context.Context, c *domain.Contract, r *domain.Redemption, sign []arkade.Signer) error
 }
 
 // Pair is a settlement message and its immediate predecessor. The covenant

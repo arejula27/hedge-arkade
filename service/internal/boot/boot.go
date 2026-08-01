@@ -100,11 +100,12 @@ func Wire(ctx context.Context, cfg config.Config, o Options) (*Service, error) {
 		Users: users,
 		// Announcing wraps the store rather than each use case: Advance is the
 		// only way a contract moves, so it is the only place this belongs.
-		Contracts: events.Announce(postgres.NewContractRepo(s.DB), s.Broker),
-		Exits:     postgres.NewExitRepo(s.DB),
-		Signer:    signer.New(registry),
-		Stack:     arkadeadapter.New(s.Stack, registry, chain),
-		Feed:      feed,
+		Contracts:   events.Announce(postgres.NewContractRepo(s.DB), s.Broker),
+		Exits:       postgres.NewExitRepo(s.DB),
+		Redemptions: postgres.NewRedemptionRepo(s.DB),
+		Signer:      signer.New(registry),
+		Stack:       arkadeadapter.New(s.Stack, registry, chain),
+		Feed:        feed,
 
 		ServiceKey: serviceKey.PubKey(),
 	})

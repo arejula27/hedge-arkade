@@ -234,6 +234,69 @@ func TestTheDemo(t *testing.T) {
 	}
 }
 
+// Leaf 2: both parties agree to end it early, at a split of their own choosing,
+// with no oracle and no covenant involved. It goes straight to the operator —
+// the leaf carries no tweaked emulator key, so the emulator has nothing to run.
+func TestClosingEarly(t *testing.T) {
+	d := newDemo(t)
+
+	alice, bob := d.user("alice"), d.user("bob")
+	d.board(alice)
+	d.board(bob)
+
+	before := map[string]int64{
+		"alice": d.wallet(alice).SpendableSats,
+		"bob":   d.wallet(bob).SpendableSats,
+	}
+
+	contract := d.accept(bob, d.propose(alice).ID)
+	d.fund(alice, contract.ID)
+	d.waitFor(contract.ID, "active", 3*time.Minute)
+
+	// A lopsided split, nothing like what the covenant would pay: the point of
+	// this leaf is that the two of them decide, and the covenant is out of it.
+	lopsided := struct{ short, long int64 }{19_000_000, 1_000_000}
+
+	var proposal struct {
+		ShortSats   int64 `json:"short_sats"`
+		LongSats    int64 `json:"long_sats"`
+		ShortSigned bool  `json:"short_signed"`
+		LongSigned  bool  `json:"long_signed"`
+	}
+	d.expect(&alice, http.MethodPost, "/api/contracts/"+contract.ID+"/redemption",
+		fmt.Sprintf(`{"short_sats":%d,"long_sats":%d}`, lopsided.short, lopsided.long),
+		http.StatusCreated, &proposal)
+
+	if !proposal.ShortSigned || proposal.LongSigned {
+		t.Fatalf("after proposing: short %v, long %v", proposal.ShortSigned, proposal.LongSigned)
+	}
+
+	d.expect(&bob, http.MethodPost, "/api/contracts/"+contract.ID+"/redemption/sign", "",
+		http.StatusOK, &proposal)
+	if !proposal.ShortSigned || !proposal.LongSigned {
+		t.Fatal("both signed and the proposal does not say so")
+	}
+
+	d.waitFor(contract.ID, "redeemed", 2*time.Minute)
+
+	// And the money moved the way they agreed, not the way the formula would
+	// have.
+	for _, side := range []struct {
+		name  string
+		user  string
+		stake int64
+		paid  int64
+	}{
+		{"alice", alice, 10_000_000, lopsided.short},
+		{"bob", bob, 10_000_000, lopsided.long},
+	} {
+		want := before[side.name] - side.stake + side.paid
+		if got := d.settledBalance(side.user, want, time.Minute); got != want {
+			t.Errorf("%s has %d sats, want %d", side.name, got, want)
+		}
+	}
+}
+
 // A contract whose price is inside its boundaries has nothing to settle, and
 // the refusal has to say so rather than come back as a script failure.
 func TestSettlingTooEarlyIsRefused(t *testing.T) {
